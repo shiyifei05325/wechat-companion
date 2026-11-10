@@ -34,8 +34,10 @@ def main():
         return 1
 
     sep = ";" if os.name == "nt" else ":"
+    mode_flag = "--onefile" if args.onefile else "--onedir"
     cmd = [
         sys.executable, "-m", "PyInstaller",
+        mode_flag,
         "--noconfirm",
         "--clean",
         "--name", args.name,
@@ -51,10 +53,6 @@ def main():
         # 入口
         "launcher.py",
     ]
-    if not args.onefile:
-        cmd.insert(6, "--onedir")
-    else:
-        cmd.insert(6, "--onefile")
 
     print("执行：", " ".join(cmd))
     subprocess.run(cmd, cwd=ROOT, check=True)
