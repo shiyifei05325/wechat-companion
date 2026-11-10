@@ -3,6 +3,8 @@
 [![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows)](https://www.microsoft.com/windows)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![CI](https://github.com/shiyifei05325/wechat-companion/actions/workflows/ci.yml/badge.svg)](https://github.com/shiyifei05325/wechat-companion/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/shiyifei05325/wechat-companion?display_name=tag)](https://github.com/shiyifei05325/wechat-companion/releases)
 
 用屏幕捕捉 + 键鼠模拟，在**本人已登录的 PC 微信**里自动接收指定联系人的消息，
 交给 DeepSeek 生成符合人设的回复，再像真人一样把消息发出去。
@@ -65,8 +67,12 @@
 1. 克隆或下载本仓库到本地（目录名建议 `wechat-companion`）：
 
    ```powershell
+   git clone https://github.com/shiyifei05325/wechat-companion.git
    cd wechat-companion
    ```
+
+   > 网络无法直连 GitHub 时，可在 [Releases](https://github.com/shiyifei05325/wechat-companion/releases)
+   > 下载源码压缩包。
 
 2. 登录 PC 微信，保持主窗口可见。
 3. 双击 **`一键启动.bat`**。启动器会依次：

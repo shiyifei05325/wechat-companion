@@ -22,6 +22,7 @@
 ### 修复
 
 - 干净检出（无 `local_config.json`）时，`test_config_get` 不再假设存在真实联系人。
+- 配置校验测试不再直接依赖本机 `local_config.json`：仅补齐必填示例值，干净克隆与 CI 均可通过。
 
 ### 安全
 
