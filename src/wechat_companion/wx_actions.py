@@ -158,37 +158,40 @@ def read_message_at(hwnd: int, point: Tuple[int, int], dry: bool = False) -> str
             pass
         return ""
 
-    # 右键气泡（必须落在气泡上）
-    x, y = _to_screen(origin, point)
-    pyautogui.rightClick(x, y)
-    time.sleep(0.75)
-
-    # 菜单首项即“复制”：Down 选中、Enter 激活
-    pyautogui.press("down")
-    time.sleep(0.18)
-    pyautogui.press("enter")
-    time.sleep(0.5)
-
+    txt = ""
     try:
-        now = pyperclip.paste() or ""
-    except Exception:
-        now = ""
-    txt = "" if (not now or now == sentinel) else now
+        # 右键气泡（必须落在气泡上）
+        x, y = _to_screen(origin, point)
+        pyautogui.rightClick(x, y)
+        time.sleep(0.75)
 
-    # 无条件关闭可能残留的右键菜单/预览（两次 Esc 确保清空，防止菜单堆叠卡死页面）
-    pyautogui.press("escape")
-    time.sleep(0.12)
-    pyautogui.press("escape")
-    if not txt:
-        # 非文本消息：恢复窗口显示
+        # 菜单首项即“复制”：Down 选中、Enter 激活
+        pyautogui.press("down")
+        time.sleep(0.18)
+        pyautogui.press("enter")
+        time.sleep(0.5)
+
+        try:
+            now = pyperclip.paste() or ""
+        except Exception:
+            now = ""
+        txt = "" if (not now or now == sentinel) else now
+
+        # 无条件关闭可能残留的右键菜单/预览（两次 Esc 确保清空，防止菜单堆叠卡死页面）
+        pyautogui.press("escape")
         time.sleep(0.12)
-        user32.ShowWindow(hwnd, winm.SW_SHOW)
+        pyautogui.press("escape")
+        if not txt:
+            # 非文本消息：恢复窗口显示
+            time.sleep(0.12)
+            user32.ShowWindow(hwnd, winm.SW_SHOW)
+    finally:
+        # 无论成功、失败还是中途异常，都还原用户剪贴板，不留下哨兵/消息文本
+        try:
+            pyperclip.copy(old_clip)
+        except Exception:
+            pass
 
-    # 还原用户剪贴板
-    try:
-        pyperclip.copy(old_clip)
-    except Exception:
-        pass
     logger.debug("读图 @ %s -> %r", point, txt)
     return txt.strip()
 

@@ -6,3 +6,5 @@ numpy>=1.26
 requests>=2.31
 psutil>=5.9
 flask>=3.0
+pynput>=1.7
+winocr>=0.0.15

@@ -218,6 +218,33 @@
       </div>
     </div>
 
+    <!-- 识别与记忆增强 -->
+    <div class="card full">
+      <h2>识别与记忆增强</h2>
+      <div class="row2">
+        <div class="field">
+          <label>OCR 语言标签</label>
+          <input type="text" id="OCR_LANG" placeholder="zh-Hans-CN">
+        </div>
+        <div class="field">
+          <label>历史 token 上限</label>
+          <input type="number" id="MAX_HISTORY_TOKENS" min="100" step="100">
+        </div>
+      </div>
+      <div class="switch-row">
+        <div class="txt">OCR 识别兜底
+          <small>右键复制读消息失败时，自动用 Windows 内置 OCR 识别气泡文字，提升读取成功率。</small>
+        </div>
+        <label class="switch"><input type="checkbox" id="OCR_FALLBACK_ENABLED"><span class="slider-sw"></span></label>
+      </div>
+      <div class="switch-row">
+        <div class="txt">会话历史持久化
+          <small>对话历史写入本地 SQLite，重启后自动恢复多轮上下文。</small>
+        </div>
+        <label class="switch"><input type="checkbox" id="HISTORY_PERSIST"><span class="slider-sw"></span></label>
+      </div>
+    </div>
+
     <!-- 运行数据看板 -->
     <div class="card full">
       <h2>运行数据</h2>
@@ -337,6 +364,10 @@ async function loadConfig(){
   $("DRY_RUN").checked = !!c.DRY_RUN;
   $("RESTORE_WINDOW_ON_EXIT").checked = !!c.RESTORE_WINDOW_ON_EXIT;
   $("AUTO_RESTART_ON_CRASH").checked = !!c.AUTO_RESTART_ON_CRASH;
+  $("OCR_FALLBACK_ENABLED").checked = !!c.OCR_FALLBACK_ENABLED;
+  $("OCR_LANG").value = c.OCR_LANG || "";
+  $("HISTORY_PERSIST").checked = !!c.HISTORY_PERSIST;
+  $("MAX_HISTORY_TOKENS").value = c.MAX_HISTORY_TOKENS;
 }
 
 function collectConfig(){
@@ -363,6 +394,10 @@ function collectConfig(){
     DRY_RUN: $("DRY_RUN").checked,
     RESTORE_WINDOW_ON_EXIT: $("RESTORE_WINDOW_ON_EXIT").checked,
     AUTO_RESTART_ON_CRASH: $("AUTO_RESTART_ON_CRASH").checked,
+    OCR_FALLBACK_ENABLED: $("OCR_FALLBACK_ENABLED").checked,
+    OCR_LANG: $("OCR_LANG").value,
+    HISTORY_PERSIST: $("HISTORY_PERSIST").checked,
+    MAX_HISTORY_TOKENS: num("MAX_HISTORY_TOKENS","历史 token 上限"),
   };
 }
 

@@ -21,12 +21,32 @@ else:
 
 from env_check import run_checks  # noqa: E402
 
+# 打包态下这些参数只可能来自错误的自我调用（历史 fork 炸弹根因），一律拒绝
+_FORBIDDEN_ARGS = {"-m", "pip", "ensurepip", "install"}
+
 
 def main():
     # 打包模式：exe --companion 直接运行伴侣（由控制台以子进程方式拉起）
+    # 子进程不参与单实例互斥锁
     if "--companion" in sys.argv:
         from wechat_companion.companion import main as companion_main
         companion_main()
+        return 0
+
+    # 熔断：任何危险的自我调用参数直接拒绝，不继续执行
+    if any(a in _FORBIDDEN_ARGS for a in sys.argv[1:]):
+        print("检测到不支持的启动参数，已拒绝（程序不支持以 pip/模块方式自我调用）。")
+        return 2
+
+    # 全局单实例：已有一个控制台在运行时直接退出，从机制上杜绝重复启动
+    import single_instance
+    if not single_instance.acquire():
+        print("程序已经在运行中，请勿重复启动。")
+        print("如需打开控制台，请在浏览器访问：http://127.0.0.1:5005")
+        try:
+            input("按回车键退出...")
+        except EOFError:
+            pass
         return 0
 
     if not run_checks(auto_install=True):

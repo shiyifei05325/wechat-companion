@@ -33,9 +33,41 @@ class DeepSeekCompanion:
         })
         # 对话历史：[{"role": "user"/"assistant", "content": ...}]
         self.history = []
+        # 启动时恢复上次持久化的上下文（重启不丢记忆）
+        if getattr(cfg, "HISTORY_PERSIST", False):
+            try:
+                from . import memory_store
+                self.history = memory_store.load_history(limit=cfg.KEEP_ROUNDS * 2)
+                if self.history:
+                    logger.info("已恢复 %d 条历史上下文", len(self.history))
+            except Exception:
+                self.history = []
         self._log_day = None
         self.log_path = None
         self._init_log()
+
+        # 故障熔断：连续失败达到阈值后打开，冷却期内直接快速失败，不再密集打接口
+        self._cb_failures = 0
+        self._cb_open_until = 0.0
+        self.CB_FAILURE_THRESHOLD = 3
+        self.CB_OPEN_SECONDS = 30.0
+
+    def _breaker_open(self):
+        """熔断是否处于打开状态（冷却期内拒绝新请求）；半开（到期）放行一次试探"""
+        if self._cb_open_until and time.monotonic() < self._cb_open_until:
+            return True
+        return False
+
+    def _record_success(self):
+        self._cb_failures = 0
+        self._cb_open_until = 0.0
+
+    def _record_failure(self):
+        self._cb_failures += 1
+        if self._cb_failures >= self.CB_FAILURE_THRESHOLD:
+            self._cb_open_until = time.monotonic() + self.CB_OPEN_SECONDS
+            logger.warning("接口连续失败 %d 次，熔断 %.0f 秒",
+                           self._cb_failures, self.CB_OPEN_SECONDS)
 
     def close(self):
         """释放连接池"""
@@ -60,7 +92,12 @@ class DeepSeekCompanion:
         """
         收到用户消息，返回伴侣回复文本。
         多轮上下文自动携带；全部重试失败时返回 None（并撤回该条用户消息）。
+        熔断打开期间直接快速失败，不发起请求。
         """
+        if self._breaker_open():
+            logger.warning("接口熔断中，本次消息快速跳过（不发起请求）")
+            return None
+
         self.history.append({"role": "user", "content": user_text})
         self._trim_history()
 
@@ -120,20 +157,54 @@ class DeepSeekCompanion:
             logger.error("DeepSeek 调用失败：%s", last_err)
             # 从历史中撤掉这条用户消息，等下次消息到来时重新进入上下文
             self.history.pop()
+            self._record_failure()
             return None
 
         usage = data.get("usage", {})
         self.history.append({"role": "assistant", "content": answer})
         self._trim_history()
+        self._persist_history()
+        self._record_success()
 
         self._log(user_text, answer, usage)
         return answer
 
+    @staticmethod
+    def _approx_tokens(text):
+        """
+        估算单条文本的 token 数（无外部依赖的保守近似）：
+        中文等 CJK 字符按约 1 token/字，其余字符按约 1 token/4 字符。
+        """
+        s = str(text)
+        cjk = sum(1 for ch in s if "㐀" <= ch <= "鿿")
+        other = len(s) - cjk
+        return cjk + max(1, other // 4)
+
+    def _history_tokens(self):
+        return sum(self._approx_tokens(m.get("content", "")) for m in self.history)
+
     def _trim_history(self):
-        """只保留最近 KEEP_ROUNDS*2 条消息"""
+        """
+        双约束裁剪：
+        1) 条数：只保留最近 KEEP_ROUNDS*2 条；
+        2) token：超过 MAX_HISTORY_TOKENS 时，从最旧开始成对删除。
+        """
         keep = self.cfg.KEEP_ROUNDS * 2
         if len(self.history) > keep:
             self.history = self.history[-keep:]
+        token_budget = getattr(self.cfg, "MAX_HISTORY_TOKENS", 0)
+        if token_budget:
+            while len(self.history) > 2 and self._history_tokens() > token_budget:
+                self.history = self.history[2:]
+
+    def _persist_history(self):
+        """把当前历史镜像落库（失败静默）。"""
+        if getattr(self.cfg, "HISTORY_PERSIST", False):
+            try:
+                from . import memory_store
+                memory_store.save_history(self.history)
+            except Exception:
+                pass
 
     # ---------------- 对话记录（业务日志） ----------------
     def _init_log(self):

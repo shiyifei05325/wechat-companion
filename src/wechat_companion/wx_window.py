@@ -173,6 +173,27 @@ def grab(hwnd: int) -> Tuple[np.ndarray, Tuple[int, int]]:
     return img, (l, t)
 
 
+def grab_region(hwnd: int, win_rect) -> np.ndarray:
+    """
+    只截取窗口内的一个子区域（窗口相对坐标 win_rect=(x0,y0,x1,y1)），
+    用于空闲轮询/签名比对，避免整窗拷贝。返回该区域的 BGRA 数组。
+    """
+    l, t, r, b = get_rect(hwnd)
+    win_w = max(1, r - l)
+    win_h = max(1, b - t)
+    x0, y0, x1, y1 = win_rect
+    x0 = max(0, int(x0)); y0 = max(0, int(y0))
+    # 下界保证至少 1 像素，上界钳到窗口真实宽高，避免窗口缩放/标定偏差时
+    # mss 抓到窗口外像素而引发签名误判
+    x1 = min(win_w, max(x0 + 1, int(x1)))
+    y1 = min(win_h, max(y0 + 1, int(y1)))
+    shot = _get_mss().grab({
+        "left": l + x0, "top": t + y0,
+        "width": x1 - x0, "height": y1 - y0,
+    })
+    return np.array(shot)
+
+
 # --------------------------------------------------------------------------
 # 布局标定：通过像素扫描确定各面板边界，分辨率/尺寸变化也能自适应
 # --------------------------------------------------------------------------

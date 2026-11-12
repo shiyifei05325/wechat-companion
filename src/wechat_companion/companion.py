@@ -41,6 +41,15 @@ from .exceptions import (
 )
 from .logging_setup import configure_logging, get_logger
 from .validation import validate_or_raise
+from . import wx_ocr
+
+# 全局停止热键：优先用 pynput 做事件监听（无需轮询），缺失时回退 GetAsyncKeyState
+try:
+    from pynput import keyboard as _pynput_kb
+    _PYNPUT_OK = True
+except Exception:  # pragma: no cover - 依赖缺失时降级
+    _pynput_kb = None
+    _PYNPUT_OK = False
 
 user32 = ctypes.windll.user32
 
@@ -121,6 +130,17 @@ def _write_heartbeat():
         pass
 
 
+def _resolve_vk(key):
+    """
+    解析按键的虚拟键码：
+    普通键为 KeyCode（直接有 .vk）；功能键为 Key 枚举（vk 在 .value.vk）。
+    """
+    vk = getattr(key, "vk", None)
+    if vk is None:
+        vk = getattr(getattr(key, "value", None), "vk", None)
+    return vk
+
+
 class CompanionRunner:
     def __init__(self):
         self.running = True
@@ -133,6 +153,8 @@ class CompanionRunner:
         self.recent_self = []   # 最近自己发送的文本（防自回复）
         self.active_until = 0.0
         self._last_hb = 0.0
+        self._hotkey_stop = False
+        self._listener = None
 
     # ---------------- 启动 ----------------
     def start(self):
@@ -180,6 +202,7 @@ class CompanionRunner:
                          daemon=True).start()
 
         try:
+            self.start_hotkey_listener()
             self._prepare()
             self._loop()
         finally:
@@ -225,8 +248,8 @@ class CompanionRunner:
 
     # ---------------- 停止检测 ----------------
     def _stop_requested(self):
-        if self._stop_pressed():
-            logger.info("收到停止热键 F9，退出中...")
+        if self._hotkey_stop or (not _PYNPUT_OK and self._stop_pressed()):
+            logger.info("收到停止热键，退出中...")
             return True
         if _stop_file_requested():
             logger.info("收到控制台停止指令，退出中...")
@@ -235,6 +258,35 @@ class CompanionRunner:
             logger.info("控制台已关闭，伴侣自动退出...")
             return True
         return False
+
+    def start_hotkey_listener(self):
+        """启动 pynput 全局热键监听；不可用时静默回退到轮询方式。"""
+        if not _PYNPUT_OK:
+            logger.warning("pynput 不可用，停止热键改用 GetAsyncKeyState 轮询")
+            return
+        target_vk = cfg.STOP_VK
+
+        def _on_press(key):
+            if _resolve_vk(key) == target_vk:
+                self._hotkey_stop = True
+
+        try:
+            self._listener = _pynput_kb.Listener(on_press=_on_press)
+            self._listener.daemon = True
+            self._listener.start()
+            logger.info("全局停止热键监听已启动（VK=%s）", target_vk)
+        except Exception as e:
+            logger.warning("热键监听启动失败，回退轮询：%s", e)
+            self._listener = None
+
+    def stop_hotkey_listener(self):
+        """停止热键监听，释放底层线程。"""
+        try:
+            if self._listener is not None:
+                self._listener.stop()
+        except Exception:
+            pass
+        self._listener = None
 
     def _poll_interval(self):
         """自适应：活跃期快速，空闲期放慢"""
@@ -259,8 +311,8 @@ class CompanionRunner:
                     time.sleep(cfg.POLL_INTERVAL)
                     continue
 
-                img, _ = winm.grab(self.hwnd)
-                sig = detect.area_signature(img, self.watch)
+                region = winm.grab_region(self.hwnd, self.watch)
+                sig = detect.region_signature(region)
 
                 if not self._changed(sig):
                     consecutive_errors = 0
@@ -269,17 +321,21 @@ class CompanionRunner:
 
                 # 画面变化：进入活跃期，快速等待画面稳定
                 self.active_until = time.monotonic() + ACTIVE_WINDOW
-                last_img, stable_sig, status = self._wait_settled()
+                stable_sig, status = self._wait_settled()
                 if status == "stop":
                     self.running = False
                     break
-                if last_img is None:
-                    # 回到基线（瞬时闪烁）或超时仍在动画：按无变化处理
-                    if status == "baseline":
-                        self.baseline = stable_sig
+                if status == "baseline":
+                    # 瞬时闪烁后回到基线：基线本身正确，无需更新，直接进入下一轮
+                    time.sleep(self._poll_interval())
+                    continue
+                if stable_sig is None:
+                    # 超时仍在动画：按无变化处理
                     time.sleep(self._poll_interval())
                     continue
 
+                # 稳定后只做一次整窗抓取，用于定位并处理最新消息
+                last_img, _ = winm.grab(self.hwnd)
                 self._handle_new(last_img)
                 self.baseline = stable_sig
                 self.active_until = time.monotonic() + ACTIVE_WINDOW
@@ -307,23 +363,23 @@ class CompanionRunner:
     def _wait_settled(self):
         """
         快速稳定确认：连续 2 次签名一致即稳定（先立即采样，再每 SETTLE_POLL 秒）。
-        返回 (img, sig, status)；status: 'ok'/'stop'/'baseline'/'timeout'
+        只抓 watch 区域，不整窗拷贝。
+        返回 (sig, status)；status: 'ok'/'stop'/'baseline'/'timeout'
         """
         last_sig = None
-        last_img = None
         t0 = time.monotonic()
         while True:
             if self._stop_requested():
-                return None, None, "stop"
-            img, _ = winm.grab(self.hwnd)
-            s = detect.area_signature(img, self.watch)
+                return None, "stop"
+            region = winm.grab_region(self.hwnd, self.watch)
+            s = detect.region_signature(region)
             if not self._changed(s):
-                return None, s, "baseline"
+                return s, "baseline"
             if last_sig is not None and (s == last_sig).all():
-                return img, s, "ok"
-            last_sig, last_img = s, img
+                return s, "ok"
+            last_sig = s
             if time.monotonic() - t0 >= SETTLE_DEADLINE:
-                return None, None, "timeout"
+                return None, "timeout"
             time.sleep(SETTLE_POLL)
 
     def _changed(self, sig):
@@ -382,6 +438,12 @@ class CompanionRunner:
                                   point[1] + max(10, (by1 - by0) // 3)))
             logger.info("首次读图为空，换点 %s 重试", alt)
             txt = actions.read_message_at(self.hwnd, alt, cfg.DRY_RUN)
+
+        # 右键复制仍失败：用 Windows OCR 兜底识别气泡文字
+        if not txt and cfg.OCR_FALLBACK_ENABLED and not cfg.DRY_RUN:
+            txt = wx_ocr.recognize_bubble(img, found.get("band"), lang=cfg.OCR_LANG)
+            if txt:
+                logger.info("右键读消息失败，OCR 兜底识别：%s", txt)
 
         # 过滤搜索流程残留（搜索框里的微信号文本）
         if txt and txt.strip() == cfg.TARGET_WXID:
@@ -467,11 +529,18 @@ class CompanionRunner:
 
     def _shutdown(self, original_rect):
         logger.info("正在退出...")
+        self.stop_hotkey_listener()
         try:
             if (cfg.RESTORE_WINDOW_ON_EXIT and not cfg.DRY_RUN
                     and winm.user32.IsWindow(self.hwnd)):
                 l, t, r, b = original_rect
                 winm.normalize_window(self.hwnd, l, t, r - l, b - t)
+        except Exception:
+            pass
+        # 释放大脑连接池（关闭 HTTP 连接）
+        try:
+            if self.brain is not None:
+                self.brain.close()
         except Exception:
             pass
         _release_lock()

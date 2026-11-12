@@ -33,7 +33,21 @@ def _machine_guid():
         return ""
 
 
-def _cpu_id():
+def _cim_cpu_id():
+    """通过 CIM 取 CPU ProcessorId（wmic 的现代替代，返回值与 wmic 一致）"""
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             "(Get-CimInstance Win32_Processor | Select-Object -ExpandProperty ProcessorId)"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout
+        return "".join(out.split())
+    except Exception:
+        return ""
+
+
+def _wmic_cpu_id():
+    """wmic 兜底（旧系统仍可能保留该命令）"""
     try:
         out = subprocess.run(
             ["wmic", "cpu", "get", "ProcessorId"],
@@ -41,7 +55,29 @@ def _cpu_id():
         ).stdout
         return "".join(out.split()[1:])
     except Exception:
-        return platform.processor() or ""
+        return ""
+
+
+def _registry_cpu_name():
+    """注册表 CPU 名称（无需子进程，始终可用）"""
+    try:
+        import winreg
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"HARDWARE\DESCRIPTION\System\CentralProcessor\0",
+        ) as k:
+            return winreg.QueryValueEx(k, "ProcessorNameString")[0].strip()
+    except Exception:
+        return ""
+
+
+def _cpu_id():
+    # 依次尝试：CIM（推荐）→ wmic → 注册表名称 → platform，保证拿到稳定 CPU 标识
+    for getter in (_cim_cpu_id, _wmic_cpu_id, _registry_cpu_name):
+        value = getter()
+        if value:
+            return value
+    return platform.processor() or ""
 
 
 def _volume_serial():

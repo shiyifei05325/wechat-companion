@@ -14,6 +14,10 @@ from .config import DATA_DIR
 DB_PATH = os.path.join(DATA_DIR, "runtime.db")
 _lock = threading.Lock()
 
+# 统计保留期（天）：超过该天数的事件在启动时清理；0 表示永久保留
+RETENTION_DAYS = 30
+_pruned = False
+
 
 def _connect():
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -36,6 +40,26 @@ def init_db():
                 text_len INTEGER DEFAULT 0
             )"""
         )
+    _prune_once()
+
+
+def _prune_once():
+    """每个进程只执行一次：删除过期事件并回收空间"""
+    global _pruned
+    if _pruned or RETENTION_DAYS <= 0:
+        _pruned = True
+        return
+    _pruned = True
+    try:
+        cutoff = (dt.datetime.now() - dt.timedelta(days=RETENTION_DAYS)).isoformat()
+        with _lock, _connect() as conn:
+            conn.execute("DELETE FROM events WHERE ts < ?", (cutoff,))
+            conn.commit()
+        # VACUUM 必须在事务外执行，用独立连接回收磁盘空间
+        with _connect() as conn:
+            conn.execute("VACUUM")
+    except Exception:
+        pass
 
 
 def _record(kind: str, latency_ms: int = 0, text_len: int = 0) -> None:
@@ -96,7 +120,7 @@ def summary():
     init_db()
     today = dt.datetime.now().replace(hour=0, minute=0, second=0).isoformat()
     with _connect() as conn:
-        allc = _counts(conn)
+        all_counts = _counts(conn)
         todayc = _counts(conn, today)
         avg_all = _avg_latency(conn)
         avg_today = _avg_latency(conn, today)
@@ -123,13 +147,13 @@ def summary():
             "success_rate": _success_rate(todayc),
         },
         "all": {
-            "recv": allc.get("recv", 0),
-            "self": allc.get("self", 0),
-            "reply_ok": allc.get("reply_ok", 0),
-            "reply_fail": allc.get("reply_fail", 0),
-            "errors": allc.get("error", 0),
+            "recv": all_counts.get("recv", 0),
+            "self": all_counts.get("self", 0),
+            "reply_ok": all_counts.get("reply_ok", 0),
+            "reply_fail": all_counts.get("reply_fail", 0),
+            "errors": all_counts.get("error", 0),
             "avg_latency": avg_all,
-            "success_rate": _success_rate(allc),
+            "success_rate": _success_rate(all_counts),
         },
         "series": series,
     }

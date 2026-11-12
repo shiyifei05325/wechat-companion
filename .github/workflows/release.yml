@@ -14,11 +14,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Resolve release notes
+        id: notes
+        run: |
+          FILE="docs/release-notes/${GITHUB_REF_NAME}.md"
+          if [ -f "$FILE" ]; then
+            echo "path=$FILE" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=CHANGELOG.md" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: ${{ github.ref_name }} - 微信虚拟伴侣（首个开源版本）
-          body_path: docs/release-notes/v1.1.0.md
+          name: ${{ github.ref_name }} - 微信虚拟伴侣
+          body_path: ${{ steps.notes.outputs.path }}
           draft: false
           prerelease: false
           make_latest: "true"

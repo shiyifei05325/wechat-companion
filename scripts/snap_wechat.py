@@ -4,7 +4,13 @@ import os
 import psutil, ctypes
 from ctypes import wintypes
 import mss
-import uiautomation as ua
+try:
+    import uiautomation as ua
+except ImportError:
+    raise SystemExit(
+        "该调试脚本需要可选依赖 uiautomation（不随主程序安装）。\n"
+        r"如需运行：C:\Python313\python.exe -m pip install uiautomation"
+    )
 
 # 1) 找到微信主窗口（属于 Weixin.exe 的可见 Qt 窗口，面积最大）
 wx_pids = set()
@@ -22,6 +28,9 @@ for c in root.GetChildren():
         if area > best_area:
             best = c
             best_area = area
+
+if best is None:
+    raise SystemExit("未找到微信主窗口：请确认 PC 微信已登录、主窗口可见后重试。")
 
 r = best.BoundingRectangle
 print("rect:", r.left, r.top, r.right, r.bottom, "title:", best.Name, "class:", best.ClassName)

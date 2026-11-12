@@ -58,6 +58,14 @@ def validate(cfg):
     # 记忆 / 节奏
     if int(g("KEEP_ROUNDS", 0)) < 1:
         errors.append("KEEP_ROUNDS 至少为 1")
+    if int(g("MAX_HISTORY_TOKENS", 0)) < 100:
+        errors.append("MAX_HISTORY_TOKENS 不建议小于 100")
+    if not isinstance(g("HISTORY_PERSIST"), bool):
+        errors.append("HISTORY_PERSIST 必须是布尔值")
+    if not str(g("OCR_LANG", "")).strip():
+        errors.append("OCR_LANG 不能为空")
+    if not isinstance(g("OCR_FALLBACK_ENABLED"), bool):
+        errors.append("OCR_FALLBACK_ENABLED 必须是布尔值")
     if float(g("POLL_INTERVAL", 0)) < 0.3:
         errors.append("POLL_INTERVAL 不建议小于 0.3 秒（避免高频截图造成卡顿）")
     if int(g("STABLE_CHECKS", 0)) < 1:

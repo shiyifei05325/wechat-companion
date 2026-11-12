@@ -129,7 +129,11 @@ python -m pytest tests -q
      "IDLE_POLL_INTERVAL": 2.0,
      "TYPE_THINK_DELAY": [0.5, 2.2],
      "REPLY_COOLDOWN": 0.8,
-     "DRY_RUN": false
+     "DRY_RUN": false,
+     "OCR_FALLBACK_ENABLED": true,
+     "OCR_LANG": "zh-Hans-CN",
+     "HISTORY_PERSIST": true,
+     "MAX_HISTORY_TOKENS": 3000
    }
    ```
 
@@ -153,6 +157,10 @@ python -m pytest tests -q
 | `DRY_RUN` | 演练模式：只记录不发送 | `false` |
 | `RESTORE_WINDOW_ON_EXIT` | 退出时恢复微信窗口原位置 | `false` |
 | `AUTO_RESTART_ON_CRASH` | 看门狗自动重启（默认关闭） | `false` |
+| `OCR_FALLBACK_ENABLED` | 右键读消息失败时用 Windows OCR 兜底 | `true` |
+| `OCR_LANG` | OCR 语言标签（本机已装识别语言） | `zh-Hans-CN` |
+| `HISTORY_PERSIST` | 会话历史写入 SQLite，重启恢复上下文 | `true` |
+| `MAX_HISTORY_TOKENS` | 历史 token 近似上限，超出从最旧裁剪 | `3000` |
 
 窗口位置与尺寸（`WINDOW_LEFT/TOP/WIDTH/HEIGHT`）属于布局参数，改版面结构时才会用到，
 默认 `0, 0, 1180, 900`。**运行期间不要手动移动/缩放微信窗口**；关闭或最小化微信是允许的
@@ -200,7 +208,10 @@ Enter 发送（失败依次尝试 Ctrl+Enter、点击「发送」按钮）
 | 思考 + 请求 | 停顿与接口调用并行，耗时取较大值 |
 | HTTP | 启动预热 TLS，keep-alive 长连接复用 |
 | 异常 | 主循环逐轮隔离，指数退避（封顶 30s），单次异常不崩溃 |
-| 生命周期 | `companion.lock` 单实例、`companion.stop` 优雅停止、`companion.heartbeat` 心跳、看门狗监测卡死 |
+| 故障熔断 | 接口连续失败 3 次后熔断 30s，期间快速失败、不密集打接口 |
+| 截屏 | 空闲轮询只抓消息区（区域截屏），稳定后才整窗抓取一次 |
+| 生命周期 | `companion.lock` 伴侣单实例、`companion.stop` 优雅停止、`companion.heartbeat` 心跳、看门狗监测卡死 |
+| 全局单实例 | 命名 Mutex 保证整机只运行一个控制台；打包态禁用 pip 并拒绝自调用，杜绝进程自我复制 |
 | 父进程联动 | 控制台退出后伴侣自动停止，不留隐藏进程 |
 
 日志（均在 `logs/`）：
@@ -217,6 +228,7 @@ Enter 发送（失败依次尝试 Ctrl+Enter、点击「发送」按钮）
 - **人设**：伴侣名字、性格/说话风格提示词；
 - **接口**：API Key、模型、温度；
 - **节奏**：记忆轮数、活跃/空闲轮询、思考停顿、回复冷却；
+- **识别与记忆增强**：OCR 兜底开关与语言、历史持久化、token 上限；
 - **看板**：今日收发数、成功率、平均耗时、近 7 天柱状图；
 - **日志**：增量查看运行日志；
 - **配置备份/恢复**：导出/导入 JSON（不含 API Key）；
@@ -231,8 +243,9 @@ Enter 发送（失败依次尝试 Ctrl+Enter、点击「发送」按钮）
 ```
 wechat-companion/
 ├── 一键启动.bat          # 用户入口：环境检测 → 按需安装 → 打开控制台
-├── launcher.py           # 统一启动器（打包后兼容 --companion 子进程）
-├── env_check.py          # 环境检测与按需安装（仅标准库）
+├── launcher.py           # 统一启动器（打包后兼容 --companion 子进程，含自调用熔断）
+├── single_instance.py    # 全局单实例（Windows 命名 Mutex，防止重复启动/进程爆炸）
+├── env_check.py          # 环境检测与按需安装（仅标准库；打包态禁用 pip）
 ├── run.py                # 命令行备用入口（直接跑伴侣）
 ├── requirements.txt
 ├── requirements-dev.txt
@@ -244,13 +257,15 @@ wechat-companion/
 │   ├── exceptions.py     # 异常体系
 │   ├── validation.py     # 启动配置校验
 │   ├── secret_store.py   # DPAPI 密钥保护（data/.apikey）
-│   ├── stats.py          # SQLite 运行统计
+│   ├── stats.py          # SQLite 运行统计（含保留期清理与 VACUUM）
+│   ├── memory_store.py   # SQLite 会话历史持久化（重启恢复多轮上下文）
 │   ├── license.py        # 可选授权框架（机器码 + HMAC 许可）
-│   ├── wx_window.py      # 窗口查找/激活、截图、布局标定
-│   ├── wx_detect.py      # 签名、气泡识别、系统消息过滤
-│   ├── wx_actions.py     # 打开聊天、右键读消息、粘贴发送
-│   ├── brain.py          # DeepSeek 调用：记忆、连接池、重试
-│   └── companion.py      # 主控循环
+│   ├── wx_window.py      # 窗口查找/激活、整窗/区域截图、布局标定
+│   ├── wx_detect.py      # 签名、区域签名、气泡识别、系统消息过滤
+│   ├── wx_ocr.py         # Windows 内置 OCR 读消息兜底
+│   ├── wx_actions.py     # 打开聊天、右键读消息（剪贴板兜底）、粘贴发送
+│   ├── brain.py          # DeepSeek 调用：记忆、连接池、重试、故障熔断
+│   └── companion.py      # 主控循环（区域截屏轮询，降低 CPU/内存）
 ├── control/
 │   ├── server.py         # Flask 控制台：配置/进程/统计/日志/本地限制
 │   └── static/index.html # 控制台页面
@@ -272,7 +287,7 @@ wechat-companion/
 
 ```powershell
 pip install -r requirements.txt -r requirements-dev.txt
-python -m pytest tests -q          # 63 项用例
+python -m pytest tests -q          # 79 项用例
 python -m pytest tests -v          # 查看明细
 ```
 

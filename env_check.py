@@ -16,6 +16,10 @@ import sys
 
 MIN_PYTHON = (3, 9)
 
+# 是否为 PyInstaller 打包态：打包后依赖已内置，禁止任何 pip/自安装行为
+# （历史教训：打包态误判依赖缺失后用 sys.executable 自我拉起，形成 fork 炸弹）
+FROZEN = getattr(sys, "frozen", False)
+
 # 导入名 -> (pip 发行版名, 最低版本)
 REQUIRED_PACKAGES = {
     "pyautogui": ("pyautogui", "0.9.54"),
@@ -26,6 +30,9 @@ REQUIRED_PACKAGES = {
     "requests": ("requests", "2.31"),
     "psutil": ("psutil", "5.9"),
     "flask": ("flask", "3.0"),
+    # 全局热键（pynput）与 Windows 内置 OCR 兜底（winocr），均为 Windows 专用
+    "pynput": ("pynput", "1.7"),
+    "winocr": ("winocr", "0.0.15"),
 }
 
 
@@ -66,6 +73,21 @@ def _module_available(import_name):
         return False
 
 
+def frozen_import_smoke():
+    """
+    打包态专用：真正 import 每个内置模块，确认能加载。
+    只验证“能否导入”，不查版本（打包态没有安装元数据）。
+    返回失败的导入名列表；全部成功返回空列表。
+    """
+    failed = []
+    for import_name in REQUIRED_PACKAGES:
+        try:
+            importlib.import_module(import_name)
+        except Exception:
+            failed.append(import_name)
+    return failed
+
+
 def _installed_version(dist_name):
     try:
         import importlib.metadata as metadata
@@ -92,7 +114,9 @@ def missing_packages():
 
 # ---------------- pip 与安装 ----------------
 def ensure_pip():
-    """确认 pip 可用；缺失时用 ensurepip 引导"""
+    """确认 pip 可用；打包态永远不允许引导 pip"""
+    if FROZEN:
+        return False
     try:
         subprocess.run(
             [sys.executable, "-m", "pip", "--version"],
@@ -112,7 +136,10 @@ def ensure_pip():
 
 
 def install_packages(specs):
-    """安装指定需求规格；成功返回 True"""
+    """安装指定需求规格；成功返回 True。打包态直接拒绝（防止自我拉起）"""
+    if FROZEN:
+        print("打包态不支持在线安装，依赖已内置；跳过安装。")
+        return False
     if not specs:
         return True
     if not ensure_pip():
@@ -162,20 +189,30 @@ def run_checks(auto_install=True):
         print("Python 版本过低，请升级后重试。")
         return False
 
-    missing = missing_packages()
-    if missing:
-        print(f"缺失或过旧的依赖（{len(missing)} 个）：{', '.join(missing)}")
-        if auto_install:
-            if not install_packages(missing):
-                print("依赖安装失败，请检查网络或手动执行 pip install。")
-                return False
-            missing = missing_packages()
-            if missing:
-                print(f"安装后仍缺失：{', '.join(missing)}")
-                return False
-            print("依赖安装完成。")
+    if FROZEN:
+        # 打包态：依赖已内置，只做导入冒烟；失败直接退出，绝不安装/自我拉起
+        print("打包运行模式：依赖已内置，执行导入冒烟检查...")
+        failed = frozen_import_smoke()
+        if failed:
+            print("内置模块加载失败：" + ", ".join(failed))
+            print("发布包可能损坏，请重新获取完整程序目录。")
+            return False
+        print("内置模块全部可正常加载。")
     else:
-        print("运行时依赖：全部已安装且版本达标。")
+        missing = missing_packages()
+        if missing:
+            print(f"缺失或过旧的依赖（{len(missing)} 个）：{', '.join(missing)}")
+            if auto_install:
+                if not install_packages(missing):
+                    print("依赖安装失败，请检查网络或手动执行 pip install。")
+                    return False
+                missing = missing_packages()
+                if missing:
+                    print(f"安装后仍缺失：{', '.join(missing)}")
+                    return False
+                print("依赖安装完成。")
+        else:
+            print("运行时依赖：全部已安装且版本达标。")
 
     wechat_pids = detect_wechat()
     if wechat_pids:

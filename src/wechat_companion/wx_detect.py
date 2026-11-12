@@ -61,15 +61,12 @@ def watch_rect(layout) -> Tuple[int, int, int, int]:
     return x0, y0 + int((y1 - y0) * 0.45), x1, y1
 
 
-def area_signature(img: np.ndarray, rect: Tuple[int, int, int, int],
-                    gy: int = 24, gx: int = 8) -> np.ndarray:
+def _grid_signature(gray: np.ndarray, gy: int = 24, gx: int = 8) -> np.ndarray:
     """
-    计算指定区域的灰度网格签名（检测画面是否变化）。
-    rect: (x0,y0,x1,y1) 窗口相对坐标
+    对单通道灰度图计算网格均值签名（每格均值量化到 //4）。
+    供 area_signature / region_signature 复用，保证两者结果一致。
     """
-    x0, y0, x1, y1 = rect
-    region = img[y0:y1, x0:x1, :3].mean(axis=2)
-    h, w = region.shape
+    h, w = gray.shape
     if h < gy or w < gx:
         return np.zeros(gx * gy, dtype=np.uint8)
     ys = np.linspace(0, h, gy + 1, dtype=int)
@@ -77,9 +74,30 @@ def area_signature(img: np.ndarray, rect: Tuple[int, int, int, int],
     cells = []
     for i in range(gy):
         for j in range(gx):
-            block = region[ys[i]:ys[i + 1], xs[j]:xs[j + 1]]
+            block = gray[ys[i]:ys[i + 1], xs[j]:xs[j + 1]]
             cells.append(int(block.mean()) if block.size else 0)
     return (np.array(cells) // 4).astype(np.uint8)
+
+
+def area_signature(img: np.ndarray, rect: Tuple[int, int, int, int],
+                    gy: int = 24, gx: int = 8) -> np.ndarray:
+    """
+    计算指定区域的灰度网格签名（检测画面是否变化）。
+    rect: (x0,y0,x1,y1) 窗口相对坐标
+    """
+    x0, y0, x1, y1 = rect
+    gray = img[y0:y1, x0:x1, :3].mean(axis=2)
+    return _grid_signature(gray, gy, gx)
+
+
+def region_signature(region_img: np.ndarray, gy: int = 24,
+                      gx: int = 8) -> np.ndarray:
+    """
+    对“已按 watch 区域裁剪好的画面”直接计算网格签名，
+    结果与 area_signature(整窗, watch) 一致，省去整窗拷贝。
+    """
+    gray = region_img[:, :, :3].mean(axis=2)
+    return _grid_signature(gray, gy, gx)
 
 
 # --------------------------------------------------------------------------

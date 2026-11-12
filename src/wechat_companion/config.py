@@ -6,7 +6,7 @@
 个人配置（目标微信号、人设、节奏等）保存在项目根目录的 local_config.json，
 该文件已被 .gitignore 排除，不会随代码提交；本文件只保留可公开的默认值。
 
-配置优先级：环境变量 > local_config.json > 本文件内置值
+配置优先级：环境变量 > DPAPI 密钥存储 > local_config.json > 本文件内置值
 
 密钥安全：API 密钥不写入本文件，由 secret_store 以 Windows DPAPI 加密
 （与当前用户/机器绑定）保存在 data/.apikey。
@@ -85,6 +85,10 @@ SYSTEM_PROMPT = _v(
 )
 # 上下文保留的最近对话轮数（一轮=用户+伴侣）
 KEEP_ROUNDS = int(_v("KEEP_ROUNDS", 12))
+# 会话历史是否持久化到本地 SQLite（重启后自动恢复上下文，参考 chatgpt-on-wechat）
+HISTORY_PERSIST = bool(_v("HISTORY_PERSIST", True))
+# 历史上下文的近似 token 上限：超出后从最旧对话开始裁剪，防止超出模型上下文窗口
+MAX_HISTORY_TOKENS = int(_v("MAX_HISTORY_TOKENS", 3000))
 
 # ============ 窗口与布局 ============
 # 启动时把微信主窗口固定到该位置和尺寸（像素，物理分辨率）
@@ -111,6 +115,13 @@ TYPE_THINK_DELAY = tuple(float(x) for x in _v(
 DRY_RUN = bool(_v("DRY_RUN", False))
 # 伴侣异常退出/卡死时，看门狗是否自动重启（默认关闭：仍由人工在控制台启动）
 AUTO_RESTART_ON_CRASH = bool(_v("AUTO_RESTART_ON_CRASH", False))
+
+# ============ OCR 识别兜底（Windows 内置 OCR） ============
+# 右键复制读消息失败时，自动用 OCR 识别气泡文字，提升消息读取成功率
+OCR_FALLBACK_ENABLED = bool(_v("OCR_FALLBACK_ENABLED", True))
+# OCR 语言标签（Windows 已安装的识别语言，本机为简体中文）
+OCR_LANG = str(_v("OCR_LANG", "zh-Hans-CN"))
+
 # 紧急停止热键（虚拟键码：F9=0x78）。把鼠标猛甩到屏幕左上角也可触发 pyautogui FAILSAFE
 STOP_VK = 0x78
 

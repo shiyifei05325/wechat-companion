@@ -35,6 +35,7 @@ def main():
 
     sep = ";" if os.name == "nt" else ":"
     mode_flag = "--onefile" if args.onefile else "--onedir"
+    src_dir = os.path.join(ROOT, "src")
     cmd = [
         sys.executable, "-m", "PyInstaller",
         mode_flag,
@@ -42,14 +43,23 @@ def main():
         "--clean",
         "--name", args.name,
         "--console",   # 保留控制台窗口（显示日志；关闭窗口即停止服务）
+        # 关键：让分析器能找到 src 布局下的 wechat_companion 包
+        f"--paths={src_dir}",
+        # 保证包内全部子模块（含动态导入的模块）都进入产物
+        "--collect-submodules=wechat_companion",
         # 数据资源
         f"--add-data=control{sep}control",
         f"--add-data=assets{sep}assets",
-        # 隐式依赖（pyautogui / mss 的部分后端不会被自动追踪）
+        # 隐式依赖（pyautogui / mss / requests 的部分后端不会被自动追踪）
         "--hidden-import=mss.windows",
         "--hidden-import=pyautogui",
         "--collect-submodules=pyautogui",
         "--collect-submodules=pygetwindow",
+        "--collect-submodules=requests",
+        # 全局热键 / OCR 及其 winrt 后端（部分模块为动态导入，需显式收集）
+        "--collect-submodules=pynput",
+        "--collect-submodules=winocr",
+        "--collect-submodules=winrt",
         # 入口
         "launcher.py",
     ]

@@ -113,6 +113,10 @@ FIELD_TYPES = {
     "DRY_RUN": "bool",
     "RESTORE_WINDOW_ON_EXIT": "bool",
     "AUTO_RESTART_ON_CRASH": "bool",
+    "OCR_FALLBACK_ENABLED": "bool",
+    "OCR_LANG": "str",
+    "HISTORY_PERSIST": "bool",
+    "MAX_HISTORY_TOKENS": "int",
 }
 
 
@@ -137,14 +141,25 @@ def _coerce(name, raw):
     raise ValueError(f"未知字段 {name}")
 
 
-def _effective_config():
-    """重新加载 config 模块，返回当前生效的配置值"""
+_config_cache = None
+
+
+def _effective_config(force=False):
+    """
+    返回当前生效的配置值。
+    默认使用缓存：仅在首次或保存后（force=True）才 reload config 模块，
+    避免每次 GET /config、/status、/health 都重载模块。
+    """
+    global _config_cache
+    if _config_cache is not None and not force:
+        return dict(_config_cache)
     from wechat_companion import config
     importlib.reload(config)
     out = {k: getattr(config, k) for k in FIELD_TYPES}
     # tuple 转 list，方便 JSON 序列化
     if isinstance(out["TYPE_THINK_DELAY"], tuple):
         out["TYPE_THINK_DELAY"] = list(out["TYPE_THINK_DELAY"])
+    _config_cache = dict(out)
     return out
 
 
@@ -253,9 +268,9 @@ class CompanionProcess:
             return False, f"启动失败：{e}"
         with open(PID_PATH, "w", encoding="utf-8") as f:
             f.write(str(self.proc.pid))
-        # 早期崩溃检测
+        # 早期崩溃检测（Popen.wait 形参名为 timeout，不能写成 time）
         try:
-            rc = self.proc.wait(time=1.8)
+            rc = self.proc.wait(timeout=1.8)
             return False, f"伴侣启动后很快退出（退出码 {rc}），请查看日志"
         except subprocess.TimeoutExpired:
             return True, "已启动"
@@ -529,9 +544,13 @@ def save_config():
         _persist_values(values)
     except Exception as e:
         return jsonify(error=f"保存配置失败：{e}"), 500
-    # 回读代码文件校验
-    after = _effective_config()
+    # 回读校验（强制重载，确认刚保存的值已生效）。
+    # 密钥字段不写 local_config、且可能被环境变量/DPAPI 覆盖，reload 值与提交值
+    # 未必相等，因此只对非密钥字段做等值校验，避免保存成功却误报 500。
+    after = _effective_config(force=True)
     for k in FIELD_TYPES:
+        if k in SECRET_FIELDS:
+            continue
         if after[k] != values[k]:
             return jsonify(error=f"配置保存后校验不一致：{k}"), 500
     return jsonify(ok=True, config=after)
@@ -671,12 +690,25 @@ def api_config_import():
         _persist_values(values)
     except Exception as e:
         return jsonify(error=f"保存配置失败：{e}"), 500
-    return jsonify(ok=True, config=_effective_config())
+    return jsonify(ok=True, config=_effective_config(force=True))
+
+
+def _port_in_use(port):
+    """端口是否已被监听（含被其他程序占用的情况）"""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        return s.connect_ex((HOST, port)) == 0
 
 
 def main():
     port = 5005
     url = f"http://{HOST}:{port}"
+    if _port_in_use(port):
+        logger.error("端口 %s 已被占用：可能已有一个控制台在运行。", port)
+        print(f"端口 {port} 已被占用。若控制台已在运行，请直接访问：{url}")
+        print("如确认无其他实例，请检查任务管理器中是否有残留进程后重试。")
+        return
     logger.info("=" * 50)
     logger.info("微信虚拟伴侣 · 后端控制台 v%s", __version__)
     logger.info("访问地址：%s（仅本机可访问）", url)
@@ -684,7 +716,11 @@ def main():
     logger.info("关闭本窗口：控制台停止，伴侣也会随之自动退出（不留后台进程）")
     logger.info("=" * 50)
     threading.Timer(1.2, _open_browser, args=(url,)).start()
-    app.run(host=HOST, port=port, debug=False, use_reloader=False)
+    try:
+        app.run(host=HOST, port=port, debug=False, use_reloader=False)
+    except OSError as e:
+        logger.error("无法绑定端口 %s：%s", port, e)
+        print(f"启动失败：端口 {port} 不可用（{e}）。请释放该端口后重试。")
 
 
 if __name__ == "__main__":
