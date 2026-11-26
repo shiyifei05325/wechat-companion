@@ -8,7 +8,7 @@
   * 系统消息（时间分隔条/居中提示）自动识别并跳过；
   * 兜底：两侧头像列（贴图/表情等无气泡内容）。
 """
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 
@@ -299,7 +299,7 @@ def find_bottom_bubble(img: np.ndarray, layout) -> Dict[str, Optional[object]]:
     mid = (x0 + x1) // 2
 
     # 主判据：气泡填充带（掩码只算一次）；跳过系统消息，取最靠下的一条
-    fill, gfull, ofull, bg_gray = _fill_bands(img, layout)
+    fill, gfull, ofull, _bg_gray = _fill_bands(img, layout)
     for top, bottom, side in reversed(fill):
         if bottom >= y_end or side == "system":
             continue

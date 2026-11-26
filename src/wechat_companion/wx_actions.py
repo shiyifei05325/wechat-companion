@@ -5,28 +5,25 @@
 - 点击气泡并 Ctrl+C 读取文本
 - 在输入框粘贴文本并回车发送（带剪贴板校验与发送结果校验）
 """
-import ctypes
 import time
-from typing import Optional, Tuple
+from typing import Tuple
 
 import pyautogui
 import pyperclip
 
-from . import wx_window as winm
 from . import wx_detect as detect
+from . import wx_window as winm
 from .logging_setup import get_logger
 
 logger = get_logger(__name__)
-
-user32 = ctypes.windll.user32
 
 pyautogui.FAILSAFE = True   # 鼠标甩到左上角可紧急中止
 pyautogui.PAUSE = 0.06
 
 
 def _to_screen(origin: Tuple[int, int], point: Tuple[int, int]) -> Tuple[int, int]:
-    l, t = origin
-    return l + point[0], t + point[1]
+    left, top = origin
+    return left + point[0], top + point[1]
 
 
 def _click(origin: Tuple[int, int], point: Tuple[int, int],
@@ -132,7 +129,7 @@ def read_message_at(hwnd: int, point: Tuple[int, int], dry: bool = False) -> str
     """
     if not winm.force_foreground(hwnd):
         return ""
-    img, origin = winm.grab(hwnd)
+    _img, origin = winm.grab(hwnd)
 
     old_clip = ""
     if not dry:
@@ -182,9 +179,9 @@ def read_message_at(hwnd: int, point: Tuple[int, int], dry: bool = False) -> str
         time.sleep(0.12)
         pyautogui.press("escape")
         if not txt:
-            # 非文本消息：恢复窗口显示
+            # 非文本消息：恢复窗口显示并前置
             time.sleep(0.12)
-            user32.ShowWindow(hwnd, winm.SW_SHOW)
+            winm.show_and_activate(hwnd)
     finally:
         # 无论成功、失败还是中途异常，都还原用户剪贴板，不留下哨兵/消息文本
         try:
@@ -252,7 +249,7 @@ def send_message(hwnd: int, layout, text: str, dry: bool = False) -> bool:
         logger.warning("无法把微信置前，发送取消")
         return False
 
-    img, origin = winm.grab(hwnd)
+    _img, origin = winm.grab(hwnd)
     _click(origin, layout.input_click, dry)
     time.sleep(0.5)
 

@@ -24,6 +24,8 @@ __pycache__/
 build/
 dist/
 *.spec
+# 仓库内手工维护的备用打包配置需保留（build_exe.py 为推荐构建路径）
+!WeChatCompanion.spec
 .venv/
 venv/
 env/

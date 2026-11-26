@@ -6,9 +6,10 @@ import sys
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_ROOT, "src"))
 
-from PIL import Image, ImageDraw
-from wechat_companion import wx_window as winm
-from wechat_companion import wx_detect as detect
+from PIL import Image, ImageDraw  # noqa: E402
+
+from wechat_companion import wx_detect as detect  # noqa: E402
+from wechat_companion import wx_window as winm  # noqa: E402
 
 hwnd = winm.find_main_window()
 img, origin = winm.grab(hwnd)
@@ -29,7 +30,10 @@ d.rectangle([x0, y0, x1, y1], outline=(0, 160, 255), width=2)
 d.line([layout.nav_w, 60, layout.nav_w, 880], fill=(255, 0, 255), width=2)
 d.line([layout.list_r, 60, layout.list_r, 880], fill=(255, 0, 255), width=2)
 # 输入面板顶部
-d.line([layout.list_r, layout.input_top, pil.width - 10, layout.input_top], fill=(0, 200, 0), width=2)
+d.line(
+    [layout.list_r, layout.input_top, pil.width - 10, layout.input_top],
+    fill=(0, 200, 0), width=2,
+)
 # 搜索图标 / 结果行 / 输入点击 / 发送按钮
 for (px, py), c in [(layout.search_icon, (255, 0, 0)),
                     (layout.search_result_row, (255, 128, 0)),

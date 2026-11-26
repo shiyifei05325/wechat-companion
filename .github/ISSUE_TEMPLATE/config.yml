@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 使用问题与常见问题
+    url: https://github.com/shiyifei05325/wechat-companion#常见问题
+    about: 提交问题前请先查看 README 的常见问题章节。
+  - name: 安全漏洞私密报告
+    url: https://github.com/shiyifei05325/wechat-companion/blob/main/SECURITY.md
+    about: 安全漏洞请勿公开提交，请按 SECURITY.md 中的方式私下报告。

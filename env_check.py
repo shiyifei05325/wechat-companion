@@ -9,7 +9,6 @@
 - pip 缺失时尝试 ensurepip 引导。
 """
 import importlib.util
-import os
 import re
 import subprocess
 import sys
@@ -151,7 +150,7 @@ def install_packages(specs):
         *specs,
     ]
     print("执行安装：", " ".join(specs))
-    completed = subprocess.run(cmd)
+    completed = subprocess.run(cmd, check=False)
     return completed.returncode == 0
 
 

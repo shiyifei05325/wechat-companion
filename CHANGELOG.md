@@ -2,6 +2,33 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.2.2 (2026-11-26)
+
+对照 GitHub 优质开源项目（chatgpt-on-wechat、Ruff 等）的工程标准，完成静态检查、
+缺陷清理与社区文件补全，不改变既有功能契约。
+
+### 修复
+
+- 修复 `WeChatCompanion.spec` 中残留的旧路径 `pathex`（指向不存在的 `微信/src`），
+  改为相对路径 `src`，备用打包配置恢复可用。
+- 清理 6 处未使用导入、5 处未使用解包变量，消除潜在歧义与维护噪音。
+- 6 处 `subprocess.run` 显式标注 `check=False`，明确“不强制校验返回码”的意图。
+- 3 处隐式 `Optional` 改为显式 `Optional[T]`，符合 PEP 484。
+- 模糊变量名 `l` 统一改为 `left`，并拆分同行多语句，符合 PEP 8。
+
+### 新增
+
+- 新增 `CODE_OF_CONDUCT.md`（Contributor Covenant 2.1 中文版）、`SECURITY.md`。
+- 新增 Issue 模板（Bug 报告 / 功能建议 / config）、PR 模板与 Dependabot 配置。
+- 引入 [Ruff](https://github.com/astral-sh/ruff) 静态检查，规则配置于 `pyproject.toml`，
+  并加入 CI 与 `requirements-dev.txt`。
+
+### 变更
+
+- CI 增加 Ruff 检查步骤，Python 矩阵补充 3.13。
+- `.gitignore` 为手工维护的 `WeChatCompanion.spec` 添加保留例外。
+- README 同步社区文件、目录结构、Ruff 检查与正确的测试数量（81 项）。
+
 ## 1.2.1 (2026-11-12)
 
 全量逐字节复查后的缺陷修复与加固（只读复查发现，不改变既有功能契约）。

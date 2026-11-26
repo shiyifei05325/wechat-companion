@@ -8,6 +8,7 @@ import datetime as dt
 import os
 import sqlite3
 import threading
+from typing import Optional
 
 from .config import DATA_DIR
 
@@ -92,7 +93,7 @@ def record_error(where: str = "") -> None:
     _record("error", text_len=len(where))
 
 
-def _counts(conn, since: str = None):
+def _counts(conn, since: Optional[str] = None):
     q = "SELECT kind, COUNT(*) FROM events"
     args = ()
     if since:
@@ -102,7 +103,7 @@ def _counts(conn, since: str = None):
     return {r[0]: r[1] for r in conn.execute(q, args)}
 
 
-def _avg_latency(conn, since: str = None):
+def _avg_latency(conn, since: Optional[str] = None):
     q = "SELECT AVG(latency_ms) FROM events WHERE kind='reply_ok' AND latency_ms>0"
     if since:
         q += " AND ts >= ?"
