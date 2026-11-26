@@ -10,12 +10,25 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
       - name: Resolve release notes
         id: notes
+        shell: bash
         run: |
           FILE="docs/release-notes/${GITHUB_REF_NAME}.md"
           if [ -f "$FILE" ]; then
@@ -23,6 +36,15 @@ jobs:
           else
             echo "path=CHANGELOG.md" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Build executable
+        run: python scripts/build_exe.py --onefile
+
+      - name: Verify artifact
+        shell: bash
+        run: |
+          ls -lh dist/
+          test -f dist/WeChatCompanion.exe
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -32,3 +54,4 @@ jobs:
           draft: false
           prerelease: false
           make_latest: "true"
+          files: dist/WeChatCompanion.exe
