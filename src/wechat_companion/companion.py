@@ -27,10 +27,10 @@ import threading
 import time
 
 from . import config as cfg
-from . import wx_window as winm
+from . import stats, wx_ocr
 from . import wx_actions as actions
 from . import wx_detect as detect
-from . import stats
+from . import wx_window as winm
 from .brain import DeepSeekCompanion
 from .exceptions import (
     ActionError,
@@ -41,7 +41,6 @@ from .exceptions import (
 )
 from .logging_setup import configure_logging, get_logger
 from .validation import validate_or_raise
-from . import wx_ocr
 
 # 全局停止热键：优先用 pynput 做事件监听（无需轮询），缺失时回退 GetAsyncKeyState
 try:
@@ -74,7 +73,7 @@ def _lock_held_by_live_instance():
     """锁文件中的 pid 仍是一个运行中的伴侣进程时返回 True（run.py / --companion）"""
     try:
         import psutil
-        with open(LOCK_PATH, "r", encoding="utf-8") as f:
+        with open(LOCK_PATH, encoding="utf-8") as f:
             old = int(f.read().strip() or 0)
         if old and psutil.pid_exists(old):
             cmdline = " ".join(psutil.Process(old).cmdline())
@@ -404,15 +403,15 @@ class CompanionRunner:
         if u.IsIconic(self.hwnd):
             return "idle"
         if not u.IsWindowVisible(self.hwnd):
-            # 非最小化的隐藏窗口才尝试恢复显示（用户主动最小化不干预）
-            u.ShowWindow(self.hwnd, winm.SW_SHOW)
+            # 非最小化的隐藏窗口（关闭到托盘）：恢复并前置，避免只显示不激活
+            winm.show_and_activate(self.hwnd)
             return "idle"
 
         # 位置纠偏：只在偏移明显时拉回，不与用户的正常操作抢焦点
-        l, t, r, b = winm.get_rect(self.hwnd)
-        if (abs(l - cfg.WINDOW_LEFT) > 12 or abs(t - cfg.WINDOW_TOP) > 12
-                or abs((r - l) - cfg.WINDOW_WIDTH) > 14
-                or abs((b - t) - cfg.WINDOW_HEIGHT) > 14):
+        left, top, right, bottom = winm.get_rect(self.hwnd)
+        if (abs(left - cfg.WINDOW_LEFT) > 12 or abs(top - cfg.WINDOW_TOP) > 12
+                or abs((right - left) - cfg.WINDOW_WIDTH) > 14
+                or abs((bottom - top) - cfg.WINDOW_HEIGHT) > 14):
             u.SetWindowPos(
                 self.hwnd, 0,
                 cfg.WINDOW_LEFT, cfg.WINDOW_TOP,
@@ -433,7 +432,7 @@ class CompanionRunner:
 
         # 文本气泡首次读空：在气泡内换点（纵向偏移）重试一次
         if not txt and found.get("source") == "fill" and not cfg.DRY_RUN:
-            bx0, by0, bx1, by1 = found["band"]
+            _bx0, by0, _bx1, by1 = found["band"]
             alt = (point[0], min(by1 - 10,
                                   point[1] + max(10, (by1 - by0) // 3)))
             logger.info("首次读图为空，换点 %s 重试", alt)
@@ -533,8 +532,8 @@ class CompanionRunner:
         try:
             if (cfg.RESTORE_WINDOW_ON_EXIT and not cfg.DRY_RUN
                     and winm.user32.IsWindow(self.hwnd)):
-                l, t, r, b = original_rect
-                winm.normalize_window(self.hwnd, l, t, r - l, b - t)
+                left, top, right, bottom = original_rect
+                winm.normalize_window(self.hwnd, left, top, right - left, bottom - top)
         except Exception:
             pass
         # 释放大脑连接池（关闭 HTTP 连接）

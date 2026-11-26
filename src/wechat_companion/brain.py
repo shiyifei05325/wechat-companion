@@ -19,7 +19,8 @@ class DeepSeekCompanion:
         self.cfg = cfg
         if not cfg.DEEPSEEK_API_KEY:
             raise RuntimeError(
-                "未配置 DEEPSEEK_API_KEY：请在 config.py 中填写，或用环境变量 DEEPSEEK_API_KEY 覆盖。"
+                "未配置 DEEPSEEK_API_KEY：请在 config.py 中填写，"
+                "或用环境变量 DEEPSEEK_API_KEY 覆盖。"
             )
         self.url = cfg.DEEPSEEK_BASE_URL.rstrip("/") + "/chat/completions"
         # 连接复用：同一 Session 内保持 TCP/TLS 长连接，省去每次握手开销
@@ -54,9 +55,7 @@ class DeepSeekCompanion:
 
     def _breaker_open(self):
         """熔断是否处于打开状态（冷却期内拒绝新请求）；半开（到期）放行一次试探"""
-        if self._cb_open_until and time.monotonic() < self._cb_open_until:
-            return True
-        return False
+        return bool(self._cb_open_until and time.monotonic() < self._cb_open_until)
 
     def _record_success(self):
         self._cb_failures = 0

@@ -15,6 +15,7 @@ import json
 import os
 import platform
 import subprocess
+from typing import Optional
 
 from .config import DATA_DIR
 
@@ -39,7 +40,7 @@ def _cim_cpu_id():
         out = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command",
              "(Get-CimInstance Win32_Processor | Select-Object -ExpandProperty ProcessorId)"],
-            capture_output=True, text=True, timeout=10,
+            check=False, capture_output=True, text=True, timeout=10,
         ).stdout
         return "".join(out.split())
     except Exception:
@@ -51,7 +52,7 @@ def _wmic_cpu_id():
     try:
         out = subprocess.run(
             ["wmic", "cpu", "get", "ProcessorId"],
-            capture_output=True, text=True, timeout=8,
+            check=False, capture_output=True, text=True, timeout=8,
         ).stdout
         return "".join(out.split()[1:])
     except Exception:
@@ -83,7 +84,7 @@ def _cpu_id():
 def _volume_serial():
     try:
         out = subprocess.run(
-            "vol C:", capture_output=True, text=True,
+            "vol C:", check=False, capture_output=True, text=True,
             shell=True, timeout=8,
         ).stdout
         parts = out.strip().split()
@@ -126,7 +127,7 @@ def _verify(blob: str):
     return payload
 
 
-def write_license(expires: str = None, plan: str = "local"):
+def write_license(expires: Optional[str] = None, plan: str = "local"):
     """生成绑定当前机器的许可证（管理工具/激活成功时调用）"""
     os.makedirs(DATA_DIR, exist_ok=True)
     payload = {
@@ -163,7 +164,7 @@ def status():
     if not os.path.exists(LICENSE_PATH):
         return base
     try:
-        with open(LICENSE_PATH, "r", encoding="utf-8") as f:
+        with open(LICENSE_PATH, encoding="utf-8") as f:
             payload = _verify(f.read().strip())
     except Exception:
         base["state"] = "invalid"

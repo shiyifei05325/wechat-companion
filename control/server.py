@@ -62,7 +62,7 @@ LOOPBACK_ADDRS = {"127.0.0.1", "::1"}
 def _lock_pid():
     """锁文件中的 pid；无法读取返回 None"""
     try:
-        with open(LOCK_PATH, "r", encoding="utf-8") as f:
+        with open(LOCK_PATH, encoding="utf-8") as f:
             return int(f.read().strip() or 0)
     except Exception:
         return None
@@ -170,7 +170,7 @@ SECRET_FIELDS = {"DEEPSEEK_API_KEY"}
 def _read_overrides():
     """读取已有覆盖配置；文件缺失或损坏时返回空字典"""
     try:
-        with open(OVERRIDE_PATH, "r", encoding="utf-8") as f:
+        with open(OVERRIDE_PATH, encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except Exception:
@@ -212,9 +212,7 @@ class CompanionProcess:
             return True
         # 服务器重启后，尝试通过 pid 文件认领仍在运行的伴侣
         pid = self._read_pid()
-        if pid and self._pid_is_companion(pid):
-            return True
-        return False
+        return bool(pid and self._pid_is_companion(pid))
 
     def _pid_is_companion(self, pid):
         try:
@@ -228,7 +226,7 @@ class CompanionProcess:
 
     def _read_pid(self):
         try:
-            with open(PID_PATH, "r", encoding="utf-8") as f:
+            with open(PID_PATH, encoding="utf-8") as f:
                 return int(f.read().strip())
         except Exception:
             return None
@@ -323,7 +321,7 @@ class CompanionProcess:
             try:
                 subprocess.run(
                     ["taskkill", "/F", "/T", "/PID", str(pid)],
-                    capture_output=True, timeout=10,
+                    check=False, capture_output=True, timeout=10,
                 )
             except Exception:
                 pass
@@ -343,7 +341,7 @@ class CompanionProcess:
             try:
                 subprocess.run(
                     ["taskkill", "/F", "/T", "/PID", str(pid)],
-                    capture_output=True, timeout=8,
+                    check=False, capture_output=True, timeout=8,
                 )
             except Exception:
                 pass
@@ -408,10 +406,10 @@ class Watchdog:
     def _can_restart(self):
         now = time.monotonic()
         self._restarts = [t for t in self._restarts if now - t < 3600]
-        if (now - self._last_restart < self.RESTART_COOLDOWN
-                or len(self._restarts) >= self.MAX_RESTARTS_PER_HOUR):
-            return False
-        return True
+        return not (
+            now - self._last_restart < self.RESTART_COOLDOWN
+            or len(self._restarts) >= self.MAX_RESTARTS_PER_HOUR
+        )
 
     def _do_restart(self):
         if not self._can_restart():

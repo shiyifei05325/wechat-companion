@@ -40,7 +40,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "ruff>=0.5"]
 
 [project.scripts]
 wechat-companion = "wechat_companion.companion:main"
@@ -53,3 +53,37 @@ where = ["src"]
 testpaths = ["tests"]
 pythonpath = ["src", "."]
 addopts = "-q"
+
+# ---------------- Ruff：静态检查与导入排序 ----------------
+# 规则取舍说明：
+# - 启用 F（未用导入/变量等真实隐患）、E/W、I（导入排序）、UP（现代化）、
+#   SIM（简化）、RUF013（显式 Optional）、RUF059（未用解包变量）、PLW1510（subprocess 显式意图）；
+# - 项目刻意使用“捕获宽泛 Exception + 逐轮隔离”“清理逻辑 try/except/pass”，
+#   这是稳定性设计而非缺陷，因此不启用 BLE001、S110；
+# - 保留 typing 风格注解与统一的 UTF-8 编码声明，忽略 UP006/UP035/UP009；
+# - self.log_fh 等文件句柄需跨方法持有并在 _cleanup 关闭，忽略 SIM115。
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+exclude = ["build", "dist", "__pycache__", ".pytest_cache", ".ruff_cache"]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "W",
+    "F",
+    "I",
+    "UP",
+    "SIM",
+    "PLW1510",
+    "RUF013",
+    "RUF059",
+]
+ignore = [
+    "UP006",
+    "UP009",
+    "UP035",
+    "SIM115",
+    "SIM108",
+    "SIM105",
+]

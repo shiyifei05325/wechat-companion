@@ -58,8 +58,15 @@ def main():
         "--collect-submodules=requests",
         # 全局热键 / OCR 及其 winrt 后端（部分模块为动态导入，需显式收集）
         "--collect-submodules=pynput",
-        "--collect-submodules=winocr",
-        "--collect-submodules=winrt",
+        "--collect-all=winocr",
+        # winrt 是 PEP 420 命名空间包（拆分为多个 winrt-* 发行版），
+        # 全量 collect-submodules 在干净的 CI 环境易失败；
+        # 按 winocr 实际 import 的子模块精准收集，二进制随子模块一并打入。
+        "--collect-submodules=winrt.windows.media.ocr",
+        "--collect-submodules=winrt.windows.globalization",
+        "--collect-submodules=winrt.windows.storage.streams",
+        "--collect-submodules=winrt.windows.graphics.imaging",
+        "--collect-binaries=winrt",
         # 入口
         "launcher.py",
     ]

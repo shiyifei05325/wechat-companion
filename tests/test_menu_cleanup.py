@@ -17,6 +17,7 @@ def _blank():
 def test_read_message_always_dismisses_menus(monkeypatch):
     img = _blank()
     monkeypatch.setattr(winm, "force_foreground", lambda hwnd: True)
+    monkeypatch.setattr(winm, "show_and_activate", lambda hwnd, retries=4: True)
     monkeypatch.setattr(winm, "grab", lambda hwnd: (img, (0, 0)))
 
     pressed = []

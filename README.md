@@ -118,7 +118,7 @@ python -m pytest tests -q
 
    ```json
    {
-     "TARGET_WXID": "wxid_xxxxxxxx",
+     "TARGET_WXID": "xxxx-xxx",
      "TARGET_NAME": "对方昵称",
      "COMPANION_NAME": "小伴",
      "SYSTEM_PROMPT": "你是一个温柔、体贴、说话自然的聊天伙伴……",
@@ -249,7 +249,9 @@ wechat-companion/
 ├── run.py                # 命令行备用入口（直接跑伴侣）
 ├── requirements.txt
 ├── requirements-dev.txt
-├── pyproject.toml        # 工程元数据（src 布局、pytest 配置）
+├── pyproject.toml        # 工程元数据（src 布局、pytest、Ruff 配置）
+├── README.md / LICENSE
+├── .github/workflows/    # CI 与 Release 工作流
 ├── src/wechat_companion/
 │   ├── __init__.py       # 版本号
 │   ├── config.py         # 公开默认配置（个人值放 local_config.json）
@@ -287,7 +289,8 @@ wechat-companion/
 
 ```powershell
 pip install -r requirements.txt -r requirements-dev.txt
-python -m pytest tests -q          # 79 项用例
+python -m ruff check src control scripts *.py   # 静态检查（应全部通过）
+python -m pytest tests -q          # 81 项用例
 python -m pytest tests -v          # 查看明细
 ```
 
@@ -296,8 +299,9 @@ python -m pytest tests -v          # 查看明细
 性能并行、服务器路由。测试全部使用 mock，不会打开或操作真实微信。
 
 代码风格：4 空格缩进、UTF-8、LF；源码内不写真实联系人信息。
-CI 在 GitHub Actions 的 `windows-latest` 上运行同一套测试（见
-`.github/workflows/ci.yml`）。
+静态检查统一使用 [Ruff](https://github.com/astral-sh/ruff)，规则配置见
+`pyproject.toml` 的 `[tool.ruff]`。CI 在 GitHub Actions 的 `windows-latest`
+上运行 Ruff 与同一套测试（见 `.github/workflows/ci.yml`）。
 
 ## 打包发布
 

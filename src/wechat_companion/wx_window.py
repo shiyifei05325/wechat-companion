@@ -5,10 +5,10 @@
 import ctypes
 import time
 from ctypes import wintypes
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
-import numpy as np
 import mss
+import numpy as np
 
 from .exceptions import ActionError, WindowNotFoundError
 from .logging_setup import get_logger
@@ -56,15 +56,19 @@ def _wx_pids():
     return pids
 
 
-def enum_wx_windows() -> List[Tuple[int, str, wintypes.RECT]]:
-    """枚举所有可见的微信 Qt 窗口，返回 [(hwnd, title, rect)]"""
+def enum_wx_windows(include_hidden: bool = False) -> List[Tuple[int, str, wintypes.RECT]]:
+    """
+    枚举微信 Qt 窗口，返回 [(hwnd, title, rect)]。
+    默认只列可见窗口；include_hidden=True 时同时返回隐藏窗口（如托盘态主窗口）。
+    托盘图标消息窗口（WxTrayIconMessageWindowClass）始终排除。
+    """
     pids = _wx_pids()
     out = []
 
     EnumProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
     def cb(hwnd, _lparam):
-        if not user32.IsWindowVisible(hwnd):
+        if not include_hidden and not user32.IsWindowVisible(hwnd):
             return True
         pid = wintypes.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
@@ -72,7 +76,7 @@ def enum_wx_windows() -> List[Tuple[int, str, wintypes.RECT]]:
             return True
         cls = ctypes.create_unicode_buffer(256)
         user32.GetClassNameW(hwnd, cls, 256)
-        if not cls.value.startswith("Qt"):
+        if not cls.value.startswith("Qt") or "TrayIcon" in cls.value:
             return True
         rc = wintypes.RECT()
         user32.GetWindowRect(hwnd, ctypes.byref(rc))
@@ -89,20 +93,33 @@ def find_main_window() -> int:
     """
     找到微信主窗口。
     主窗口 = 可见 Qt 窗口中面积最大的那个（聊天独立小窗口面积更小）。
+    没有可见窗口时，微信可能只是关闭到托盘：枚举隐藏窗口并激活恢复。
     返回 hwnd；找不到时抛 WindowNotFoundError。
     """
     wins = enum_wx_windows()
     if not wins:
-        raise WindowNotFoundError("没有找到微信窗口，请先登录并打开 PC 微信。")
+        hidden = enum_wx_windows(include_hidden=True)
+        if hidden:
+            hidden.sort(key=lambda item: _rect_area(item[2]), reverse=True)
+            hwnd = hidden[0][0]
+            if show_and_activate(hwnd):
+                logger.info("微信主窗口在托盘中，已恢复并前置 hwnd=%s", hwnd)
+                wins = enum_wx_windows()
+            else:
+                raise WindowNotFoundError(
+                    "微信正在后台运行，但无法自动恢复窗口，请点击系统托盘图标打开。"
+                )
+        if not wins:
+            raise WindowNotFoundError("没有找到微信窗口，请先登录并打开 PC 微信。")
 
-    def area(item):
-        _h, _t, rc = item
-        return max(0, rc.right - rc.left) * max(0, rc.bottom - rc.top)
-
-    wins.sort(key=area, reverse=True)
+    wins.sort(key=lambda item: _rect_area(item[2]), reverse=True)
     hwnd = wins[0][0]
     logger.debug("主窗口 hwnd=%s，候选窗口 %d 个", hwnd, len(wins))
     return hwnd
+
+
+def _rect_area(rc):
+    return max(0, rc.right - rc.left) * max(0, rc.bottom - rc.top)
 
 
 def get_rect(hwnd: int) -> Tuple[int, int, int, int]:
@@ -111,30 +128,60 @@ def get_rect(hwnd: int) -> Tuple[int, int, int, int]:
     return rc.left, rc.top, rc.right, rc.bottom
 
 
-def force_foreground(hwnd: int, retries: int = 4) -> bool:
+def show_and_activate(hwnd: int, retries: int = 4) -> bool:
     """
-    可靠地把窗口提到前台（AttachThreadInput 解除前台锁）。
-    返回是否成功。
+    可靠地显示并激活窗口（含托盘隐藏态与最小化态）：
+    先 SW_RESTORE 还原，再用 AttachThreadInput 解除前台锁并前置。
+    所有线程挂接都在 try/finally 中保证解除，避免输入队列残留导致窗口卡死。
+    返回窗口是否最终处于前台。
     """
     for _ in range(retries):
-        if user32.IsIconic(hwnd):
+        try:
             user32.ShowWindow(hwnd, SW_RESTORE)
-            time.sleep(0.3)
-        fg = user32.GetForegroundWindow()
-        if fg == hwnd:
-            return True
-        fg_tid = user32.GetWindowThreadProcessId(fg, None)
-        cur_tid = kernel32.GetCurrentThreadId()
-        tgt_tid = user32.GetWindowThreadProcessId(hwnd, None)
-        user32.AttachThreadInput(fg_tid, cur_tid, True)
-        user32.AttachThreadInput(cur_tid, tgt_tid, True)
-        user32.BringWindowToTop(hwnd)
-        user32.ShowWindow(hwnd, SW_SHOW)
-        user32.SetForegroundWindow(hwnd)
-        user32.AttachThreadInput(cur_tid, tgt_tid, False)
-        user32.AttachThreadInput(fg_tid, cur_tid, False)
+        except Exception:
+            pass
+        try:
+            if user32.GetForegroundWindow() == hwnd:
+                return True
+        except Exception:
+            pass
+
+        attached = []
+        try:
+            fg = user32.GetForegroundWindow()
+            fg_tid = user32.GetWindowThreadProcessId(fg, None)
+            cur_tid = kernel32.GetCurrentThreadId()
+            tgt_tid = user32.GetWindowThreadProcessId(hwnd, None)
+            if fg_tid and user32.AttachThreadInput(fg_tid, cur_tid, True):
+                attached.append((fg_tid, cur_tid))
+            if user32.AttachThreadInput(cur_tid, tgt_tid, True):
+                attached.append((cur_tid, tgt_tid))
+            user32.BringWindowToTop(hwnd)
+            user32.ShowWindow(hwnd, SW_SHOW)
+            user32.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
+        finally:
+            for a, b in reversed(attached):
+                try:
+                    user32.AttachThreadInput(a, b, False)
+                except Exception:
+                    pass
         time.sleep(0.3)
-    return user32.GetForegroundWindow() == hwnd
+        try:
+            if user32.GetForegroundWindow() == hwnd:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def force_foreground(hwnd: int, retries: int = 4) -> bool:
+    """
+    可靠地把窗口提到前台（保留旧调用名，内部走 show_and_activate，
+    保证 AttachThreadInput 异常时也能解除挂接）。
+    """
+    return show_and_activate(hwnd, retries=retries)
 
 
 def normalize_window(hwnd: int, left: int, top: int, width: int, height: int):
@@ -164,13 +211,13 @@ def grab(hwnd: int) -> Tuple[np.ndarray, Tuple[int, int]]:
     返回 (img, (left,top))：img 为 BGRA numpy 数组（shape: H,W,4）
     窗口已关闭/最小化导致区域无效时抛 ActionError，由调用方决定退出或等待。
     """
-    l, t, r, b = get_rect(hwnd)
-    width, height = r - l, b - t
+    left, top, right, bottom = get_rect(hwnd)
+    width, height = right - left, bottom - top
     if width <= 0 or height <= 0:
         raise ActionError(f"窗口区域无效：{width}x{height}（窗口可能已关闭或最小化）")
-    shot = _get_mss().grab({"left": l, "top": t, "width": width, "height": height})
+    shot = _get_mss().grab({"left": left, "top": top, "width": width, "height": height})
     img = np.array(shot)
-    return img, (l, t)
+    return img, (left, top)
 
 
 def grab_region(hwnd: int, win_rect) -> np.ndarray:
@@ -178,17 +225,18 @@ def grab_region(hwnd: int, win_rect) -> np.ndarray:
     只截取窗口内的一个子区域（窗口相对坐标 win_rect=(x0,y0,x1,y1)），
     用于空闲轮询/签名比对，避免整窗拷贝。返回该区域的 BGRA 数组。
     """
-    l, t, r, b = get_rect(hwnd)
-    win_w = max(1, r - l)
-    win_h = max(1, b - t)
+    left, top, right, bottom = get_rect(hwnd)
+    win_w = max(1, right - left)
+    win_h = max(1, bottom - top)
     x0, y0, x1, y1 = win_rect
-    x0 = max(0, int(x0)); y0 = max(0, int(y0))
+    x0 = max(0, int(x0))
+    y0 = max(0, int(y0))
     # 下界保证至少 1 像素，上界钳到窗口真实宽高，避免窗口缩放/标定偏差时
     # mss 抓到窗口外像素而引发签名误判
     x1 = min(win_w, max(x0 + 1, int(x1)))
     y1 = min(win_h, max(y0 + 1, int(y1)))
     shot = _get_mss().grab({
-        "left": l + x0, "top": t + y0,
+        "left": left + x0, "top": top + y0,
         "width": x1 - x0, "height": y1 - y0,
     })
     return np.array(shot)

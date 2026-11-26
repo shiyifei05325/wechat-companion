@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """截取微信主窗口当前画面，用于布局分析（调试辅助脚本，需要 uiautomation）"""
 import os
-import psutil, ctypes
-from ctypes import wintypes
+
 import mss
+import psutil
+
 try:
     import uiautomation as ua
 except ImportError:
@@ -36,7 +37,12 @@ r = best.BoundingRectangle
 print("rect:", r.left, r.top, r.right, r.bottom, "title:", best.Name, "class:", best.ClassName)
 
 with mss.mss() as sct:
-    shot = sct.grab({"left": r.left, "top": r.top, "width": r.right - r.left, "height": r.bottom - r.top})
+    shot = sct.grab({
+        "left": r.left,
+        "top": r.top,
+        "width": r.right - r.left,
+        "height": r.bottom - r.top,
+    })
     img = mss.tools.to_png(shot.rgb, shot.size)
     _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 out = os.path.join(_ROOT, "assets", "wx_layout.png")

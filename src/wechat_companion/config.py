@@ -29,7 +29,7 @@ _OVERRIDE_PATH = os.path.join(BASE_DIR, "local_config.json")
 def _load_overrides():
     """读取 local_config.json 覆盖；文件缺失或损坏时静默忽略"""
     try:
-        with open(_OVERRIDE_PATH, "r", encoding="utf-8") as f:
+        with open(_OVERRIDE_PATH, encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except Exception:
