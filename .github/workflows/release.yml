@@ -26,17 +26,6 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      - name: Resolve release notes
-        id: notes
-        shell: bash
-        run: |
-          FILE="docs/release-notes/${GITHUB_REF_NAME}.md"
-          if [ -f "$FILE" ]; then
-            echo "path=$FILE" >> "$GITHUB_OUTPUT"
-          else
-            echo "path=CHANGELOG.md" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Build executable
         run: python scripts/build_exe.py --onefile
 
@@ -50,7 +39,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ github.ref_name }} - 微信虚拟伴侣
-          body_path: ${{ steps.notes.outputs.path }}
+          body: |
+            微信虚拟伴侣 ${{ github.ref_name }} 版本。
+            下载下方 WeChatCompanion.exe 后双击运行，仅支持 Windows。
           draft: false
           prerelease: false
           make_latest: "true"

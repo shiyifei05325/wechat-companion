@@ -5,6 +5,7 @@ DeepSeek 虚拟伴侣大脑：人设 + 多轮上下文记忆 + 调用接口
 import datetime
 import os
 import random
+import threading
 import time
 
 import requests
@@ -34,6 +35,8 @@ class DeepSeekCompanion:
         })
         # 对话历史：[{"role": "user"/"assistant", "content": ...}]
         self.history = []
+        # 保护对话历史的可重入锁：保证多线程下 reply 串行、历史不被并发改坏
+        self._lock = threading.RLock()
         # 启动时恢复上次持久化的上下文（重启不丢记忆）
         if getattr(cfg, "HISTORY_PERSIST", False):
             try:
@@ -88,6 +91,11 @@ class DeepSeekCompanion:
 
     # ---------------- 对话 ----------------
     def reply(self, user_text):
+        """加锁串行执行，保护对话历史；具体逻辑见 _reply_impl。"""
+        with self._lock:
+            return self._reply_impl(user_text)
+
+    def _reply_impl(self, user_text):
         """
         收到用户消息，返回伴侣回复文本。
         多轮上下文自动携带；全部重试失败时返回 None（并撤回该条用户消息）。
@@ -132,17 +140,17 @@ class DeepSeekCompanion:
                     )
                     answer = content.strip()
                     if answer:
-                        logger.info("DeepSeek 响应 %.0fms（第 %d 次尝试）",
+                        logger.info("DeepSeek 响应 %.0f 毫秒（第 %d 次尝试）",
                                     api_ms, attempt + 1)
                         break
                     # 偶发空内容：按失败处理，继续重试
                     last_err = "接口返回空内容"
-                    logger.warning("DeepSeek 返回空内容（第 %d 次，%.0fms），将重试",
+                    logger.warning("DeepSeek 返回空内容（第 %d 次，%.0f 毫秒），将重试",
                                    attempt + 1, api_ms)
                     data = None
                 else:
-                    last_err = f"HTTP {r.status_code}: {r.text[:200]}"
-                    logger.warning("DeepSeek 返回非 200（第 %d 次，%.0fms）：%s",
+                    last_err = f"状态码 {r.status_code}: {r.text[:200]}"
+                    logger.warning("DeepSeek 返回异常状态码（第 %d 次，%.0f 毫秒）：%s",
                                    attempt + 1, api_ms, last_err)
             except requests.RequestException as e:
                 last_err = str(e)

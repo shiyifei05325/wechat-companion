@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 """读图流程菜单清理测试（防止右键菜单堆叠卡死页面）"""
-import types
 
 import numpy as np
 

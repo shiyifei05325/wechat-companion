@@ -17,7 +17,7 @@ layout = winm.calibrate(img)
 print(layout)
 
 found = detect.find_bottom_bubble(img, layout)
-print("bottom bubble:", found["side"], found["point"], found["band"])
+print("底部消息：", found["side"], found["point"], found["band"])
 
 # 画标注图
 pil = Image.fromarray(img[:, :, :3][:, :, ::-1])  # BGR->RGB
@@ -51,4 +51,4 @@ if found["side"]:
 out = os.path.join(_ROOT, "assets", "calibration_overlay.png")
 os.makedirs(os.path.dirname(out), exist_ok=True)
 pil.save(out)
-print("saved", out)
+print("已保存", out)

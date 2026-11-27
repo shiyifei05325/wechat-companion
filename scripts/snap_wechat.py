@@ -34,7 +34,8 @@ if best is None:
     raise SystemExit("未找到微信主窗口：请确认 PC 微信已登录、主窗口可见后重试。")
 
 r = best.BoundingRectangle
-print("rect:", r.left, r.top, r.right, r.bottom, "title:", best.Name, "class:", best.ClassName)
+print("窗口区域：", r.left, r.top, r.right, r.bottom,
+      "标题：", best.Name, "类名：", best.ClassName)
 
 with mss.mss() as sct:
     shot = sct.grab({
@@ -49,4 +50,4 @@ out = os.path.join(_ROOT, "assets", "wx_layout.png")
 os.makedirs(os.path.dirname(out), exist_ok=True)
 with open(out, "wb") as f:
     f.write(img)
-print("saved", out)
+print("已保存", out)

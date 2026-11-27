@@ -103,7 +103,7 @@ def find_main_window() -> int:
             hidden.sort(key=lambda item: _rect_area(item[2]), reverse=True)
             hwnd = hidden[0][0]
             if show_and_activate(hwnd):
-                logger.info("微信主窗口在托盘中，已恢复并前置 hwnd=%s", hwnd)
+                logger.info("微信主窗口在托盘中，已恢复并前置，窗口句柄=%s", hwnd)
                 wins = enum_wx_windows()
             else:
                 raise WindowNotFoundError(
@@ -114,8 +114,21 @@ def find_main_window() -> int:
 
     wins.sort(key=lambda item: _rect_area(item[2]), reverse=True)
     hwnd = wins[0][0]
-    logger.debug("主窗口 hwnd=%s，候选窗口 %d 个", hwnd, len(wins))
+    logger.debug("主窗口句柄=%s，候选窗口 %d 个", hwnd, len(wins))
     return hwnd
+
+
+def find_chat_window(target_name: str):
+    """
+    按联系人昵称找到“独立聊天窗口”（双击聊天后单独弹出的窗口）。
+    独立窗口的标题就是联系人显示名称；找不到时返回 None。
+    """
+    if not target_name:
+        return None
+    for hwnd, title, _rc in enum_wx_windows():
+        if title == target_name:
+            return hwnd
+    return None
 
 
 def _rect_area(rc):
@@ -130,22 +143,43 @@ def get_rect(hwnd: int) -> Tuple[int, int, int, int]:
 
 def show_and_activate(hwnd: int, retries: int = 4) -> bool:
     """
-    可靠地显示并激活窗口（含托盘隐藏态与最小化态）：
-    先 SW_RESTORE 还原，再用 AttachThreadInput 解除前台锁并前置。
-    所有线程挂接都在 try/finally 中保证解除，避免输入队列残留导致窗口卡死。
+    显示并激活窗口，尽量减少对输入队列的干扰（防止微信界面卡顿/无响应）：
+    - 窗口已在前台时直接返回，不做任何操作，避免反复挂接输入队列；
+    - 先用轻量方式前置（不挂接其他线程），失败再用 AttachThreadInput 兜底；
+    - 所有线程挂接都在 finally 中保证解除，避免输入队列残留导致窗口卡死。
     返回窗口是否最终处于前台。
     """
     for _ in range(retries):
-        try:
-            user32.ShowWindow(hwnd, SW_RESTORE)
-        except Exception:
-            pass
+        # 已在前台：零干预直接返回（最常见路径，不 Attach、不 ShowWindow）
         try:
             if user32.GetForegroundWindow() == hwnd:
                 return True
         except Exception:
             pass
 
+        # 仅在最小化时还原，正常窗口只做 SHOW，避免对正常窗口反复 SW_RESTORE
+        try:
+            if user32.IsIconic(hwnd):
+                user32.ShowWindow(hwnd, SW_RESTORE)
+            else:
+                user32.ShowWindow(hwnd, SW_SHOW)
+        except Exception:
+            pass
+
+        # 先尝试轻量前置（不挂接输入队列，绝大多数情况下足够）
+        try:
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
+        time.sleep(0.2)
+        try:
+            if user32.GetForegroundWindow() == hwnd:
+                return True
+        except Exception:
+            pass
+
+        # 轻量方式被前台锁挡住：才用 AttachThreadInput 兜底一次
         attached = []
         try:
             fg = user32.GetForegroundWindow()
@@ -245,55 +279,90 @@ def grab_region(hwnd: int, win_rect) -> np.ndarray:
 # --------------------------------------------------------------------------
 # 布局标定：通过像素扫描确定各面板边界，分辨率/尺寸变化也能自适应
 # --------------------------------------------------------------------------
+AVATAR_EDGE = 38       # 头像边长（像素）
+
 
 class Layout:
-    """微信主窗口布局坐标（均为窗口内相对坐标）"""
+    """
+    微信窗口布局坐标（均为窗口内相对坐标）。
+    independent=True 表示独立聊天窗口（无左侧导航栏/联系人列表）。
+    """
 
-    def __init__(self, width, height, nav_w, list_r, input_top, toolbar_y=None):
+    def __init__(self, width, height, nav_w, list_r, input_top,
+                 toolbar_y=None, independent: bool = False):
         self.w = width
         self.h = height
-        self.nav_w = nav_w          # 左侧导航栏右边界
-        self.list_r = list_r        # 聊天列表面板右边界
+        self.nav_w = nav_w          # 左侧导航栏右边界（独立窗口为 0）
+        self.list_r = list_r        # 聊天列表面板右边界（独立窗口为 0）
         self.input_top = input_top  # 输入面板顶部 y
+        self.independent = independent
         # 工具栏图标行中心 y（未提供时按面板顶部推算）
         self.toolbar_y = toolbar_y if toolbar_y is not None else input_top + 68
+
+    # 头像列（独立窗口与主窗口位置不同）-----------------------------------
+    @property
+    def other_avatar(self):
+        """对方头像列 (x0,x1)"""
+        if self.independent:
+            return 34, 72
+        x0 = self.list_r + 14
+        return x0, x0 + AVATAR_EDGE
+
+    @property
+    def self_avatar(self):
+        """自己头像列 (x0,x1)"""
+        x1 = self.w - 30 if self.independent else self.w - 14
+        return x1 - AVATAR_EDGE, x1
+
+    @property
+    def content_left(self):
+        """对方内容区左边界参考（独立窗口为 0，主窗口为列表右边界）"""
+        return 0 if self.independent else self.list_r
 
     # 常用点位 -------------------------------------------------------------
     @property
     def search_icon(self):
-        # 聊天列表头部的放大镜
+        # 聊天列表头部的放大镜（仅主窗口使用）
         x = int(self.nav_w + (self.list_r - self.nav_w) * 0.60)
         return x, 78
 
     @property
     def search_result_row(self):
-        # 搜索下拉框中“联系人”第一行的点击位置
+        # 搜索下拉框中“联系人”第一行的点击位置（仅主窗口使用）
         x = self.nav_w + 230
-        y = 212
-        return x, y
+        return x, 212
 
     @property
     def message_area(self):
         # 消息展示区域 (x0,y0,x1,y1)
+        if self.independent:
+            return 12, 100, self.w - 12, self.input_top - 8
         return self.list_r + 2, 108, self.w - 12, self.input_top - 8
 
     @property
     def input_click(self):
+        # 编辑器文字行点击位置
+        if self.independent:
+            return self.w // 2, self.input_top + 45
         x = (self.list_r + self.w) // 2
-        y = self.toolbar_y - 43      # 编辑器文字行
+        y = self.toolbar_y - 43
         return x, y
 
     @property
     def send_button(self):
-        return self.w - 62, self.toolbar_y + 1
+        offset = 64 if self.independent else 62
+        return self.w - offset, self.toolbar_y + 1
 
     @property
     def toolbar_check(self):
-        # 输入框工具栏第一个表情图标的位置（用于判断输入面板是否存在）
+        # 输入框工具栏第一个表情图标的位置（判断输入面板是否存在）
+        if self.independent:
+            return 40, self.toolbar_y + 1
         return self.list_r + 38, self.toolbar_y + 1
 
     def __repr__(self):
-        return (f"Layout(w={self.w}, h={self.h}, nav_w={self.nav_w}, "
+        kind = "独立窗口" if self.independent else "主窗口"
+        return (f"Layout({kind}, w={self.w}, h={self.h}, nav_w={self.nav_w}, "
                 f"list_r={self.list_r}, input_top={self.input_top}, "
                 f"toolbar_y={self.toolbar_y})")
 
@@ -375,3 +444,42 @@ def calibrate(img):
     if not (int(h * 0.80) < input_top < h - 60):
         input_top, toolbar_y = int(h * 0.867), int(h * 0.942)
     return Layout(w, h, nav_w, list_r, input_top, toolbar_y)
+
+
+def _detect_independent_input(img):
+    """
+    独立聊天窗口的输入框检测：
+    输入框上沿是极浅的边框，在灰度均值上几乎不可见，直接找最暗行还会被
+    气泡内的深色文字吸引而误判。因此先定位特征很强、不受消息内容影响的
+    工具栏图标行，再按输入框固定高度比例反推上沿。
+    实测（1181x900）：工具栏行中心 853，输入框上沿 717，相差 136（0.151h）。
+    """
+    h = img.shape[0]
+    gray = img[:, :, :3].mean(axis=2)
+
+    # 工具栏行：底部左侧图标区域深色像素聚集（稳定可靠）
+    dark = (gray[:, 20:260] < 150).sum(axis=1)
+    t_lo, t_hi = int(h * 0.86), int(h * 0.98)
+    icon_rows = [y for y in range(t_lo, t_hi) if dark[y] >= 8]
+    if icon_rows:
+        toolbar_y = int(np.median(icon_rows))
+        input_top = toolbar_y - int(h * 0.151)
+        return input_top, toolbar_y
+    # 检测不到时兜底：按实测比例
+    return int(h * 0.797), int(h * 0.947)
+
+
+def calibrate_independent(img):
+    """
+    标定独立聊天窗口布局（无导航栏/联系人列表）。
+    img: BGRA 数组
+    """
+    h, w = img.shape[:2]
+    try:
+        input_top, toolbar_y = _detect_independent_input(img)
+        # 合理性约束，异常时回退到实测比例
+        if not (int(h * 0.65) < input_top < int(h * 0.85)):
+            input_top, toolbar_y = int(h * 0.797), int(h * 0.947)
+    except Exception:
+        input_top, toolbar_y = int(h * 0.797), int(h * 0.947)
+    return Layout(w, h, 0, 0, input_top, toolbar_y, independent=True)

@@ -8,7 +8,7 @@
   * 系统消息（时间分隔条/居中提示）自动识别并跳过；
   * 兜底：两侧头像列（贴图/表情等无气泡内容）。
 """
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -220,8 +220,19 @@ SLIDE_H = 30           # 滑动窗口高度
 STD_THRESHOLD = 22     # 头像区域灰度标准差阈值（照片通常 >25）
 
 
+def _content_left(layout) -> int:
+    """对方内容区左边界（独立窗口为 0，主窗口为列表右边界）"""
+    val = getattr(layout, "content_left", None)
+    return int(val) if val is not None else int(layout.list_r)
+
+
 def _avatar_columns(layout):
     """返回 (对方头像列x0,x1, 自己头像列x0,x1)"""
+    other = getattr(layout, "other_avatar", None)
+    own = getattr(layout, "self_avatar", None)
+    if other is not None and own is not None:
+        return int(other[0]), int(other[1]), int(own[0]), int(own[1])
+    # 回退：主窗口旧逻辑（兼容 SimpleNamespace 测试）
     inc_x0 = layout.list_r + 14
     inc_x1 = inc_x0 + AVATAR_SIZE
     own_x1 = layout.w - 14
@@ -278,7 +289,7 @@ def _avatar_fallback(img, layout, gfull=None):
         else:
             cx = own_x0 - 90
             band_rect = (own_x0 - 220, top, own_x1, bottom)
-    cx = min(max(cx, layout.list_r + 30), layout.w - 20)
+    cx = min(max(cx, _content_left(layout) + 30), layout.w - 20)
     return {"side": side, "point": (cx, cy), "band": band_rect,
             "source": "avatar"}
 
@@ -286,21 +297,19 @@ def _avatar_fallback(img, layout, gfull=None):
 # --------------------------------------------------------------------------
 # 主入口
 # --------------------------------------------------------------------------
-def find_bottom_bubble(img: np.ndarray, layout) -> Dict[str, Optional[object]]:
+def find_all_bubbles(img: np.ndarray, layout) -> List[Dict[str, object]]:
     """
-    定位最新一条消息。返回 dict:
-      side: 'self' / 'other' / None
-      point: (x,y) 气泡点击点（窗口相对坐标）
-      band: (x0,y0,x1,y1) 消息行范围
-      source: 'fill'（文本气泡）/ 'avatar'（兜底）
+    枚举当前画面里的全部消息（按从上到下顺序），每条结构同 find_bottom_bubble。
+    供主控“排空所有未读消息”使用，避免只处理最底部一条而漏掉连续消息。
     """
     y_end = layout.input_top - 6
     x0, _, x1, _ = layout.message_area
     mid = (x0 + x1) // 2
 
-    # 主判据：气泡填充带（掩码只算一次）；跳过系统消息，取最靠下的一条
+    # 主判据：气泡填充带（掩码只算一次）；跳过系统消息
     fill, gfull, ofull, _bg_gray = _fill_bands(img, layout)
-    for top, bottom, side in reversed(fill):
+    out: List[Dict[str, object]] = []
+    for top, bottom, side in fill:
         if bottom >= y_end or side == "system":
             continue
         cy = (top + bottom) // 2
@@ -316,18 +325,66 @@ def find_bottom_bubble(img: np.ndarray, layout) -> Dict[str, Optional[object]]:
             # 对方气泡只在左半区取中心（长气泡跨中线时中心点仍在气泡内）
             ext = _mask_extents(
                 ofull, top, bottom,
-                x_min=layout.list_r + 60, x_max=mid,
+                x_min=_content_left(layout) + 60, x_max=mid,
             )
             if ext:
                 cx = (ext[0] + ext[1]) // 2
                 band_rect = (ext[0], top, ext[1], bottom)
             else:
-                _ix0, inc_x1, _, _ = _avatar_columns(layout)
+                inc_x0, inc_x1, _o0, _o1 = _avatar_columns(layout)
                 cx = inc_x1 + 45
-                band_rect = (layout.list_r + 14, top, inc_x1 + 260, bottom)
-        cx = min(max(cx, layout.list_r + 30), layout.w - 20)
-        return {"side": side, "point": (cx, cy), "band": band_rect,
-                "source": "fill"}
+                band_rect = (inc_x0, top, inc_x1 + 260, bottom)
+        cx = min(max(cx, _content_left(layout) + 30), layout.w - 20)
+        out.append({"side": side, "point": (cx, cy), "band": band_rect,
+                    "source": "fill"})
 
-    # 无文本气泡（贴图/大表情）：头像列兜底（复用已算好的绿色掩码）
-    return _avatar_fallback(img, layout, gfull)
+    if out:
+        return out
+    # 无文本气泡（贴图/大表情）：头像列兜底（单条）
+    fb = _avatar_fallback(img, layout, gfull)
+    return [fb] if fb.get("side") else []
+
+
+def find_bottom_bubble(img: np.ndarray, layout) -> Dict[str, Optional[object]]:
+    """定位最新一条消息（最底部）；无消息时 side 为 None。"""
+    bubbles = find_all_bubbles(img, layout)
+    if bubbles:
+        return bubbles[-1]
+    return {"side": None, "point": None, "band": None, "source": None}
+
+
+def find_selected_row(img: np.ndarray, layout):
+    """
+    找到联系人列表中“当前选中（绿色高亮）”那一行的中心 y 坐标。
+    用于搜索并打开聊天后，定位该联系人所在行，再双击打开独立窗口。
+    返回 (x, y) 窗口相对坐标；检测不到时返回 None。
+    """
+    # 列表区右边界（独立窗口无列表，此函数仅用于主窗口）
+    x_hi = int(getattr(layout, "list_r", 0))
+    if x_hi <= 0:
+        return None
+    # 取列表中部一条窄列（避开左侧头像和右侧文字/时间）
+    probe_x = max(90, x_hi - 18)
+    bgr = img[:, probe_x, :3].astype(int)
+    r, g, b = bgr[:, 2], bgr[:, 1], bgr[:, 0]
+    is_green = (g > 150) & (r < 100) & (b < 120)
+    ys = np.where(is_green)[0]
+    if len(ys) == 0:
+        return None
+    # 取最长连续段（容忍 3px 间隙）
+    best = None
+    s = int(ys[0])
+    p = int(ys[0])
+    for y in ys[1:]:
+        y = int(y)
+        if y - p > 3:
+            if best is None or (p - s) > (best[1] - best[0]):
+                best = (s, p)
+            s = y
+        p = y
+    if best is None or (p - s) > (best[1] - best[0]):
+        best = (s, p)
+    cy = (best[0] + best[1]) // 2
+    # x 取列表中部，落在行内（避开头像）
+    cx = max(95, (80 + x_hi) // 2)
+    return cx, cy

@@ -79,8 +79,10 @@ def test_recent_self_guards_against_misclassification(monkeypatch):
     _rect(img, 320, 500, 560, 560, WHITE)  # 画面上看似对方白气泡
     monkeypatch.setattr(
         comp_mod.actions, "read_message_at",
-        lambda hwnd, point, dry: "我刚发的回复",
+        lambda hwnd, point, dry, **kwargs: "我刚发的回复",
     )
+    monkeypatch.setattr(comp_mod.winm, "grab", lambda hwnd: (img, (0, 0)))
+    monkeypatch.setattr(comp_mod, "BURST_GATHER_IDLE", 0)
     responded = []
     monkeypatch.setattr(
         comp_mod.CompanionRunner, "_respond",
@@ -90,7 +92,7 @@ def test_recent_self_guards_against_misclassification(monkeypatch):
     runner.hwnd = 1
     runner.layout = LAYOUT
     runner.recent_self = ["我刚发的回复"]
-    runner._handle_new(img)
+    runner._handle_batch()
     assert responded == []
 
 
@@ -99,8 +101,10 @@ def test_other_message_triggers_respond(monkeypatch):
     _rect(img, 320, 500, 560, 560, WHITE)
     monkeypatch.setattr(
         comp_mod.actions, "read_message_at",
-        lambda hwnd, point, dry: "你好呀",
+        lambda hwnd, point, dry, **kwargs: "你好呀",
     )
+    monkeypatch.setattr(comp_mod.winm, "grab", lambda hwnd: (img, (0, 0)))
+    monkeypatch.setattr(comp_mod, "BURST_GATHER_IDLE", 0)
     responded = []
     monkeypatch.setattr(
         comp_mod.CompanionRunner, "_respond",
@@ -109,7 +113,7 @@ def test_other_message_triggers_respond(monkeypatch):
     runner = comp_mod.CompanionRunner()
     runner.hwnd = 1
     runner.layout = LAYOUT
-    runner._handle_new(img)
+    runner._handle_batch()
     assert responded == ["你好呀"]
 
 
@@ -155,7 +159,7 @@ def test_other_point_not_pulled_by_right_avatar_noise():
     _rect(img, 1128, 500, 1166, 560, (40, 60, 200, 255))
     r = detect.find_bottom_bubble(img, LAYOUT)
     assert r["side"] == "other"
-    px, py = r["point"]
+    px, _py = r["point"]
     assert 350 <= px <= 510
 
 
@@ -164,8 +168,10 @@ def test_new_theme_other_gray_triggers_respond(monkeypatch):
     _rect(img, 350, 500, 560, 560, GRAY_BUBBLE_NEW)
     monkeypatch.setattr(
         comp_mod.actions, "read_message_at",
-        lambda hwnd, point, dry: "你吃饭了吗",
+        lambda hwnd, point, dry, **kwargs: "你吃饭了吗",
     )
+    monkeypatch.setattr(comp_mod.winm, "grab", lambda hwnd: (img, (0, 0)))
+    monkeypatch.setattr(comp_mod, "BURST_GATHER_IDLE", 0)
     responded = []
     monkeypatch.setattr(
         comp_mod.CompanionRunner, "_respond",
@@ -174,5 +180,70 @@ def test_new_theme_other_gray_triggers_respond(monkeypatch):
     runner = comp_mod.CompanionRunner()
     runner.hwnd = 1
     runner.layout = LAYOUT
-    runner._handle_new(img)
+    runner._handle_batch()
     assert responded == ["你吃饭了吗"]
+
+
+def test_consecutive_other_messages_merged_one_reply(monkeypatch):
+    """连续三条对方消息：合并通读后只用一条回复，内容按顺序拼接。"""
+    img = _blank()
+    # 三条对方气泡，不同纵向位置，均在左半区、互不合并
+    _rect(img, 350, 400, 560, 440, WHITE)
+    _rect(img, 350, 480, 560, 520, WHITE)
+    _rect(img, 350, 560, 560, 600, WHITE)
+    # 各气泡内加不同标记，模拟不同文字，使像素指纹互不相同
+    DARK = (0, 0, 0, 255)
+    _rect(img, 360, 410, 380, 430, DARK)
+    _rect(img, 360, 490, 400, 510, DARK)
+    _rect(img, 360, 570, 420, 590, DARK)
+
+    # 按点击点的 y 返回不同文本，模拟三条不同消息
+    def _fake_read(hwnd, point, dry, **kwargs):
+        y = point[1]
+        if y < 460:
+            return "第一条"
+        if y < 540:
+            return "第二条"
+        return "第三条"
+    monkeypatch.setattr(comp_mod.actions, "read_message_at", _fake_read)
+    monkeypatch.setattr(comp_mod.winm, "grab", lambda hwnd: (img, (0, 0)))
+    monkeypatch.setattr(comp_mod, "BURST_GATHER_IDLE", 0)
+
+    responded = []
+    monkeypatch.setattr(
+        comp_mod.CompanionRunner, "_respond",
+        lambda self, text: responded.append(text),
+    )
+    runner = comp_mod.CompanionRunner()
+    runner.hwnd = 1
+    runner.layout = LAYOUT
+    runner._handle_batch()
+    # 三条合并成一条回复，换行连接
+    assert responded == ["第一条\n第二条\n第三条"]
+
+
+def test_history_marked_not_responded(monkeypatch):
+    """启动时已标记为已处理的历史消息，不应触发任何回复。"""
+    img = _blank()
+    _rect(img, 350, 400, 560, 440, WHITE)
+    _rect(img, 350, 480, 560, 520, WHITE)
+    monkeypatch.setattr(
+        comp_mod.actions, "read_message_at",
+        lambda hwnd, point, dry, **kwargs: "历史消息",
+    )
+    monkeypatch.setattr(comp_mod.winm, "grab", lambda hwnd: (img, (0, 0)))
+    monkeypatch.setattr(comp_mod, "BURST_GATHER_IDLE", 0)
+    responded = []
+    monkeypatch.setattr(
+        comp_mod.CompanionRunner, "_respond",
+        lambda self, text: responded.append(text),
+    )
+    runner = comp_mod.CompanionRunner()
+    runner.hwnd = 1
+    runner.layout = LAYOUT
+    # 模拟 _prepare 末尾：把当前画面消息文本标记为已处理
+    bubbles = detect.find_all_bubbles(img, LAYOUT)
+    runner._seen_texts = [(b["side"], "历史消息") for b in bubbles]
+
+    runner._handle_batch()
+    assert responded == []

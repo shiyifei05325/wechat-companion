@@ -26,7 +26,6 @@ def test_redact_non_string_passthrough():
 
 def test_log_file_redacts_secrets(tmp_path):
     """文件处理器 + 脱敏过滤器：密钥不得落盘"""
-    import logging
     from logging.handlers import RotatingFileHandler
 
     from wechat_companion.logging_setup import _RedactionFilter

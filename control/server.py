@@ -294,14 +294,17 @@ class CompanionProcess:
         except Exception:
             pass
 
-        # 2) F9 热键兜底（按住约 1.5 秒）
+        # 2) F9 热键兜底（按住约 1.5 秒）；try/finally 保证按键一定抬起，
+        # 否则 F9 卡在“按下”状态会导致后续键盘输入异常
         user32 = ctypes.windll.user32
         user32.keybd_event(VK_F9, 0, 0, 0)
-        for _ in range(3):
-            if not _is_live_companion(pid):
-                break
-            ctypes.windll.kernel32.Sleep(500)
-        user32.keybd_event(VK_F9, 0, KEYEVENTF_KEYUP, 0)
+        try:
+            for _ in range(3):
+                if not _is_live_companion(pid):
+                    break
+                ctypes.windll.kernel32.Sleep(500)
+        finally:
+            user32.keybd_event(VK_F9, 0, KEYEVENTF_KEYUP, 0)
 
         # 3) 等待优雅退出（最多 8 秒）
         for _ in range(16):
@@ -475,7 +478,7 @@ def _before_request():
 def _after_request(resp):
     started = getattr(g, "_started", None)
     elapsed = (time.monotonic() - started) * 1000 if started else 0.0
-    logger.info("%s %s -> %s (%.0fms)",
+    logger.info("%s %s -> %s（%.0f 毫秒）",
                 request.method, request.path, resp.status_code, elapsed)
     return resp
 

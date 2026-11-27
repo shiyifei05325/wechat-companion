@@ -34,7 +34,14 @@ def main():
     payload = lic.write_license(expires=expires, plan=args.plan)
     print("许可证已生成：", lic.LICENSE_PATH)
     print("套餐：", payload["plan"], "| 到期：", payload["expires"] or "永久")
-    print("当前授权状态：", lic.status()["state"])
+    state_labels = {
+        "trial": "试用中",
+        "licensed": "已授权",
+        "invalid": "许可证无效",
+        "wrong_machine": "机器不匹配",
+        "expired": "已过期",
+    }
+    print("当前授权状态：", state_labels.get(lic.status()["state"], lic.status()["state"]))
 
 
 if __name__ == "__main__":

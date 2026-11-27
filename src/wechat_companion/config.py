@@ -91,6 +91,9 @@ HISTORY_PERSIST = bool(_v("HISTORY_PERSIST", True))
 MAX_HISTORY_TOKENS = int(_v("MAX_HISTORY_TOKENS", 3000))
 
 # ============ 窗口与布局 ============
+# 窗口模式：independent=独立聊天窗口（双击聊天单独弹出，靠昵称匹配）；
+#           main=微信主窗口（在主窗口内搜索联系人）
+WINDOW_MODE = str(_v("WINDOW_MODE", "independent")).lower()
 # 启动时把微信主窗口固定到该位置和尺寸（像素，物理分辨率）
 WINDOW_LEFT, WINDOW_TOP = 0, 0
 WINDOW_WIDTH, WINDOW_HEIGHT = 1180, 900

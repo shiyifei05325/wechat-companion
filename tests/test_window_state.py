@@ -99,6 +99,7 @@ def test_position_corrected_when_drifted(runner, monkeypatch):
 
 def test_find_main_window_recovers_from_tray(monkeypatch):
     from ctypes import wintypes
+
     from wechat_companion import wx_window as winm
     rc = wintypes.RECT(0, 0, 620, 451)
     state = {"round": 0}

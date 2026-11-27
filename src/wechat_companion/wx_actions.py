@@ -12,13 +12,14 @@ import pyautogui
 import pyperclip
 
 from . import wx_detect as detect
+from . import wx_ocr
 from . import wx_window as winm
 from .logging_setup import get_logger
 
 logger = get_logger(__name__)
 
 pyautogui.FAILSAFE = True   # 鼠标甩到左上角可紧急中止
-pyautogui.PAUSE = 0.06
+pyautogui.PAUSE = 0.04      # 每个动作后的基础停顿，尽量小以减少累积延迟
 
 
 def _to_screen(origin: Tuple[int, int], point: Tuple[int, int]) -> Tuple[int, int]:
@@ -26,13 +27,29 @@ def _to_screen(origin: Tuple[int, int], point: Tuple[int, int]) -> Tuple[int, in
     return left + point[0], top + point[1]
 
 
+def _move_to(x: int, y: int) -> None:
+    """先用系统 API 把鼠标移到目标点，再让 pyautogui 接管。
+
+    pyautogui 每次动作前会检查鼠标是否在屏幕角落（fail-safe），若上一步
+    残留位置恰好在角落会误抛 FailSafeException；这里先直接定位到目标点，
+    既保留“甩到角落紧急中止”，又避免正常流程被误触发。
+    """
+    winm.user32.SetCursorPos(int(x), int(y))
+
+
+def _click_screen(x: int, y: int, button: str = "left",
+                  clicks: int = 1) -> None:
+    _move_to(x, y)
+    pyautogui.click(x, y, button=button, clicks=clicks)
+
+
 def _click(origin: Tuple[int, int], point: Tuple[int, int],
            dry: bool = False, clicks: int = 1) -> None:
     x, y = _to_screen(origin, point)
     if dry:
-        logger.info("[DRY] click (%s,%s)", x, y)
+        logger.info("[演练] 点击 (%s,%s)", x, y)
         return
-    pyautogui.click(x, y, clicks=clicks)
+    _click_screen(x, y, clicks=clicks)
 
 
 def set_clipboard_verified(text: str, tries: int = 6) -> bool:
@@ -73,9 +90,9 @@ def open_chat_by_wxid(hwnd: int, wxid: str, dry: bool = False):
             logger.warning("剪贴板不可用，搜索取消")
             return None
         pyautogui.hotkey("ctrl", "v")
-        time.sleep(2.2)
+        time.sleep(1.8)
     else:
-        logger.info("[DRY] paste search id %s", wxid)
+        logger.info("[演练] 粘贴搜索微信号 %s", wxid)
 
     # 3) 点击联系人第一行
     img, origin = winm.grab(hwnd)
@@ -96,20 +113,97 @@ def open_chat_by_wxid(hwnd: int, wxid: str, dry: bool = False):
     # 备用：重新搜索并点击第二行位置（联系人行高约 66）
     if not dry:
         logger.info("第一行点击未打开聊天，尝试备用位置...")
-        pyautogui.click(*_to_screen(origin, layout.search_icon))
+        _click_screen(*_to_screen(origin, layout.search_icon))
         time.sleep(0.8)
         set_clipboard_verified(wxid)
         pyautogui.hotkey("ctrl", "v")
-        time.sleep(2.0)
-        pyautogui.click(*_to_screen(origin, (layout.search_result_row[0], 258)))
+        time.sleep(1.6)
+        _click_screen(*_to_screen(origin, (layout.search_result_row[0], 258)))
         time.sleep(1.2)
-        pyautogui.click(*_to_screen(origin, (700, 500)))
+        _click_screen(*_to_screen(origin, (700, 500)))
         time.sleep(0.6)
         img, origin = winm.grab(hwnd)
         new_layout = winm.calibrate(img)
         if _input_panel_exists(img, new_layout):
             return new_layout
     return None
+
+
+# 搜索结果下拉框中“联系人第一行”的中心 y（窗口固定 1180x900 实测值）
+_RESULT_ROW_Y = 167
+# 独立窗口标题 OCR 区域
+_TITLE_BAND = (0, 40, 300, 100)
+
+
+def open_chat_in_new_window(main_hwnd, wxid, target_name, dry=False):
+    """
+    自动打开独立聊天窗口的完整流程：
+      主窗口搜索微信号 -> 单击结果打开聊天 -> 双击高亮行弹出独立窗口
+      -> 前置并用 OCR 识别标题，确认进入正确窗口。
+    返回 (chat_hwnd, chat_layout)；任一步失败返回 (None, None)。
+    """
+    if not winm.force_foreground(main_hwnd):
+        logger.warning("无法把微信置前")
+        return None, None
+
+    img, origin = winm.grab(main_hwnd)
+    layout = winm.calibrate(img)
+
+    # 1) 点击搜索图标
+    _click(origin, layout.search_icon, dry)
+    time.sleep(0.9)
+
+    # 2) 粘贴微信号（绕过中文输入法）
+    if dry:
+        logger.info("[演练] 搜索微信号 %s", wxid)
+    else:
+        if not set_clipboard_verified(wxid):
+            logger.warning("剪贴板不可用，搜索取消")
+            return None, None
+        pyautogui.hotkey("ctrl", "v")
+        time.sleep(2.0)
+
+    # 3) 单击联系人第一行，在主窗口打开聊天
+    result_point = (layout.search_result_row[0], _RESULT_ROW_Y)
+    if dry:
+        logger.info("[演练] 单击搜索结果 %s", result_point)
+    else:
+        _click_screen(*_to_screen(origin, result_point))
+        time.sleep(1.6)
+
+    # 4) 定位绿色高亮行，先单击再双击，弹出独立窗口
+    img2, _ = winm.grab(main_hwnd)
+    selected = detect.find_selected_row(img2, layout)
+    if selected is None:
+        logger.warning("未找到选中的联系人行，无法打开独立窗口")
+        return None, None
+    if dry:
+        logger.info("[演练] 双击高亮行 %s 打开独立窗口", selected)
+        return None, None
+
+    _click_screen(*_to_screen(origin, selected))
+    time.sleep(0.4)
+    _click_screen(*_to_screen(origin, selected), clicks=2)
+    time.sleep(2.0)
+
+    # 5) 找到独立窗口
+    chat_hwnd = winm.find_chat_window(target_name)
+    if chat_hwnd is None:
+        logger.warning("独立聊天窗口未出现")
+        return None, None
+
+    # 6) 前置并 OCR 验证标题确实是目标联系人
+    winm.force_foreground(chat_hwnd)
+    time.sleep(0.6)
+    cimg, _ = winm.grab(chat_hwnd)
+    title = wx_ocr.recognize_bubble(cimg, band=_TITLE_BAND)
+    if not title or target_name not in title:
+        logger.warning("独立窗口标题 OCR 校验失败（识别为 %r，期望含 %s）",
+                       title, target_name)
+        return None, None
+    chat_layout = winm.calibrate_independent(cimg)
+    logger.info("已进入独立窗口并通过 OCR 校验：%s", title)
+    return chat_hwnd, chat_layout
 
 
 def _input_panel_exists(img, layout):
@@ -119,13 +213,16 @@ def _input_panel_exists(img, layout):
     return float((patch < 180).mean()) > 0.02
 
 
-def read_message_at(hwnd: int, point: Tuple[int, int], dry: bool = False) -> str:
+def read_message_at(hwnd: int, point: Tuple[int, int], dry: bool = False,
+                    independent: bool = False) -> str:
     """
     读取某条消息气泡的文本（微信4.0方式）：
     右键气泡 -> 上下文菜单首项“复制” -> 按 Down 选中、Enter 激活。
     返回文本（空字符串表示非文本消息或读取失败）。
-    用“唯一哨兵写入剪贴板”保证读到的确实是本次复制内容，
-    避免剪贴板残留造成误读。
+    用“唯一哨兵写入剪贴板”保证读到的确实是本次复制内容。
+
+    independent=True（独立聊天窗口）时全程不按 Esc：独立窗口里 Esc 会
+    直接关闭窗口；改用点击空白处清理残留，复制后菜单会自动关闭。
     """
     if not winm.force_foreground(hwnd):
         return ""
@@ -139,11 +236,14 @@ def read_message_at(hwnd: int, point: Tuple[int, int], dry: bool = False) -> str
             old_clip = ""
 
     if dry:
-        logger.info("[DRY] right-click & copy at %s", point)
+        logger.info("[演练] 在 %s 右键并复制", point)
         return ""
 
-    # 先清掉可能残留的菜单/弹窗，避免与本次右键叠加
-    pyautogui.press("escape")
+    # 清掉可能残留的菜单：独立窗口点空白（Esc 会关窗口），主窗口按 Esc
+    if independent:
+        _click_screen(*_to_screen(origin, (800, 250)))
+    else:
+        pyautogui.press("escape")
     time.sleep(0.15)
 
     sentinel = _write_sentinel()
@@ -159,14 +259,14 @@ def read_message_at(hwnd: int, point: Tuple[int, int], dry: bool = False) -> str
     try:
         # 右键气泡（必须落在气泡上）
         x, y = _to_screen(origin, point)
-        pyautogui.rightClick(x, y)
-        time.sleep(0.75)
+        _click_screen(x, y, button="right")
+        time.sleep(0.6)
 
         # 菜单首项即“复制”：Down 选中、Enter 激活
         pyautogui.press("down")
-        time.sleep(0.18)
+        time.sleep(0.15)
         pyautogui.press("enter")
-        time.sleep(0.5)
+        time.sleep(0.4)
 
         try:
             now = pyperclip.paste() or ""
@@ -174,22 +274,34 @@ def read_message_at(hwnd: int, point: Tuple[int, int], dry: bool = False) -> str
             now = ""
         txt = "" if (not now or now == sentinel) else now
 
-        # 无条件关闭可能残留的右键菜单/预览（两次 Esc 确保清空，防止菜单堆叠卡死页面）
-        pyautogui.press("escape")
-        time.sleep(0.12)
-        pyautogui.press("escape")
+        # 复制后菜单自动关闭；主窗口仍按 Esc 兜底，独立窗口不按
+        if not independent:
+            pyautogui.press("escape")
+            time.sleep(0.12)
+            pyautogui.press("escape")
         if not txt:
             # 非文本消息：恢复窗口显示并前置
             time.sleep(0.12)
             winm.show_and_activate(hwnd)
     finally:
+        # 兜底关闭残留菜单：主窗口按 Esc；独立窗口点空白（Esc 会关掉窗口）
+        if independent:
+            try:
+                _click_screen(*_to_screen(origin, (800, 250)))
+            except Exception:
+                pass
+        else:
+            try:
+                pyautogui.press("escape")
+            except Exception:
+                pass
         # 无论成功、失败还是中途异常，都还原用户剪贴板，不留下哨兵/消息文本
         try:
             pyperclip.copy(old_clip)
         except Exception:
             pass
 
-    logger.debug("读图 @ %s -> %r", point, txt)
+    logger.debug("读取消息 @ %s，结果 %r", point, txt)
     return txt.strip()
 
 
@@ -251,10 +363,10 @@ def send_message(hwnd: int, layout, text: str, dry: bool = False) -> bool:
 
     _img, origin = winm.grab(hwnd)
     _click(origin, layout.input_click, dry)
-    time.sleep(0.5)
+    time.sleep(0.4)
 
     if dry:
-        logger.info("[DRY] paste & send: %s", text)
+        logger.info("[演练] 粘贴并发送：%s", text)
         return True
 
     # 1) 清空编辑器残留
@@ -266,12 +378,12 @@ def send_message(hwnd: int, layout, text: str, dry: bool = False) -> bool:
         if not set_clipboard_verified(text):
             continue
         pyautogui.hotkey("ctrl", "v")
-        time.sleep(0.45)
+        time.sleep(0.35)
         got = _input_text_content(layout)
         if got == text:
             break
         _click(origin, layout.input_click)
-        time.sleep(0.3)
+        time.sleep(0.25)
         _clear_editor()
 
     if got != text:
@@ -286,7 +398,7 @@ def send_message(hwnd: int, layout, text: str, dry: bool = False) -> bool:
     pyautogui.hotkey("ctrl", "a")
     time.sleep(0.12)
     pyautogui.hotkey("ctrl", "v")
-    time.sleep(0.4)
+    time.sleep(0.3)
 
     before_img, _ = winm.grab(hwnd)
     before_sig = detect.area_signature(before_img, layout.message_area)

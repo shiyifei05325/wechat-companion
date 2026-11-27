@@ -13,7 +13,7 @@ def client():
 def test_index_served(client):
     r = client.get("/")
     assert r.status_code == 200
-    assert "后端控制台".encode("utf-8") in r.data
+    assert "后端控制台".encode() in r.data
 
 
 def test_health_endpoint(client):

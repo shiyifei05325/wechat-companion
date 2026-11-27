@@ -21,6 +21,7 @@
 """
 import ctypes
 import datetime
+import hashlib
 import os
 import signal
 import threading
@@ -62,6 +63,12 @@ ACTIVE_WINDOW = 30.0
 # 画面稳定确认参数
 SETTLE_POLL = 0.25
 SETTLE_DEADLINE = 4.0
+# 处理完一条消息后的抑制时长（秒）：期间画面变化只更新基线，不重复处理
+SUPPRESS_SECONDS = 0.8
+# 连续消息合并：连续多少秒没有新消息，就认为对方这波连发结束
+BURST_GATHER_IDLE = 1.5
+# 一批最多收集多少条（防止异常情况下无限收集）
+BURST_MAX = 30
 # 心跳写入最小间隔
 HEARTBEAT_INTERVAL = 2.0
 
@@ -144,16 +151,27 @@ class CompanionRunner:
     def __init__(self):
         self.running = True
         self.hwnd = None
+        self.main_hwnd = None        # 微信主窗口（用于搜索联系人）
         self.layout = None
         self.watch = None
         self.brain = None
         self.baseline = None
+        self.independent = False      # 是否运行在独立聊天窗口
+        self.suppress_until = 0.0     # 抑制期：此时间前画面变化只更新基线，不处理
+        # 已处理消息跟踪（用于排空连续消息，避免重复/遗漏）
+        self._seen_texts = []        # 已处理 (side,text) 有序列表，FIFO 修剪
+        self._seen_keep = 60         # _seen_texts 最多保留条数
+        # 气泡像素指纹 -> 文本缓存：同一条消息无论滚到哪里，气泡像素都相同，
+        # 命中缓存就不再右键，避免每轮把历史消息全部重读一遍拖慢排空。
+        self._text_cache = {}
         self.last_user = ("", 0.0)
         self.recent_self = []   # 最近自己发送的文本（防自回复）
         self.active_until = 0.0
         self._last_hb = 0.0
         self._hotkey_stop = False
         self._listener = None
+        # 当前正在等待接口的后台线程：用于避免上一条还没处理完就并发再次调用
+        self._api_worker = None
 
     # ---------------- 启动 ----------------
     def start(self):
@@ -186,14 +204,16 @@ class CompanionRunner:
         except Exception:
             pass
 
-        # 3) 定位微信窗口
+        # 3) 定位微信主窗口（搜索联系人、打开独立窗口都需要主窗口）
         try:
-            self.hwnd = winm.find_main_window()
+            self.independent = cfg.WINDOW_MODE == "independent"
+            self.main_hwnd = winm.find_main_window()
         except WindowNotFoundError as e:
             logger.error("%s", e)
             _release_lock()
             return
-        original_rect = winm.get_rect(self.hwnd)
+        self.hwnd = self.main_hwnd
+        original_rect = winm.get_rect(self.main_hwnd)
 
         # 大脑在配置校验通过后再构造；后台预热接口连接
         self.brain = DeepSeekCompanion(cfg)
@@ -207,43 +227,81 @@ class CompanionRunner:
         finally:
             self._shutdown(original_rect)
 
+    def _calibrate_now(self):
+        """抓取当前画面并按窗口模式标定，返回 (img, layout)"""
+        img, _ = winm.grab(self.hwnd)
+        if self.independent:
+            return img, winm.calibrate_independent(img)
+        return img, winm.calibrate(img)
+
     def _prepare(self):
-        # 固定窗口位置尺寸
+        # 先固定主窗口，保证搜索/列表坐标一致
         if not cfg.DRY_RUN:
             winm.normalize_window(
-                self.hwnd,
+                self.main_hwnd,
                 cfg.WINDOW_LEFT, cfg.WINDOW_TOP,
                 cfg.WINDOW_WIDTH, cfg.WINDOW_HEIGHT,
             )
-        winm.force_foreground(self.hwnd)
+        winm.force_foreground(self.main_hwnd)
 
-        # 打开目标聊天
-        if cfg.DRY_RUN:
-            img, _ = winm.grab(self.hwnd)
+        if self.independent:
+            if cfg.DRY_RUN:
+                # 演练：走一遍打开流程但不真正点击
+                actions.open_chat_in_new_window(
+                    self.main_hwnd, cfg.TARGET_WXID, cfg.TARGET_NAME, dry=True)
+                img, self.layout = self._calibrate_now()
+            else:
+                # 已有独立窗口则直接复用（重启时避免重复搜索/开窗）
+                chat_hwnd = winm.find_chat_window(cfg.TARGET_NAME)
+                if chat_hwnd is None:
+                    # 搜索微信号 -> 双击打开独立窗口 -> OCR 校验
+                    chat_hwnd, _chat_layout = actions.open_chat_in_new_window(
+                        self.main_hwnd, cfg.TARGET_WXID, cfg.TARGET_NAME)
+                if chat_hwnd is None:
+                    raise ActionError(
+                        "没能打开独立聊天窗口，请确认微信号/昵称正确后重试。")
+                self.hwnd = chat_hwnd
+                # 固定独立窗口并重新标定
+                winm.normalize_window(
+                    chat_hwnd,
+                    cfg.WINDOW_LEFT, cfg.WINDOW_TOP,
+                    cfg.WINDOW_WIDTH, cfg.WINDOW_HEIGHT,
+                )
+                img, self.layout = self._calibrate_now()
+        elif cfg.DRY_RUN:
+            img, _ = winm.grab(self.main_hwnd)
             self.layout = winm.calibrate(img)
         else:
-            self.layout = actions.open_chat_by_wxid(self.hwnd, cfg.TARGET_WXID)
+            # 主窗口模式：搜索并打开目标聊天
+            self.layout = actions.open_chat_by_wxid(self.main_hwnd, cfg.TARGET_WXID)
             if self.layout is None:
                 raise ActionError(
-                    "没能打开目标聊天，请确认微信号正确，或手动打开该聊天后重试。"
-                )
-            # 打开后再次固定窗口（打开聊天过程中窗口可能被系统调整）
+                    "没能打开目标聊天，请确认微信号正确，或手动打开该聊天后重试。")
             winm.normalize_window(
-                self.hwnd,
+                self.main_hwnd,
                 cfg.WINDOW_LEFT, cfg.WINDOW_TOP,
                 cfg.WINDOW_WIDTH, cfg.WINDOW_HEIGHT,
             )
-            img, _ = winm.grab(self.hwnd)
-            self.layout = winm.calibrate(img)
+            img, self.layout = self._calibrate_now()
 
         logger.info("布局标定: %s", self.layout)
-        # 稳定期：等待打开聊天过程中的残余动画结束，再刷新基线
-        time.sleep(2.0)
-        img, _ = winm.grab(self.hwnd)
-        self.layout = winm.calibrate(img)
+        # 稳定期：等待残余动画结束，再刷新基线
+        time.sleep(1.2)
+        img, self.layout = self._calibrate_now()
         self.watch = detect.watch_rect(self.layout)
         self.baseline = detect.area_signature(img, self.watch)
-        logger.info("已进入监听，等待新消息...")
+        # 启动基线：读取当前画面全部消息文本，标记为“已处理”。
+        # 之后用 (side,text) 文本身份做增量对比，即使新消息导致画面滚动，
+        # 也能靠文本而非绝对坐标识别新消息，同时不会把历史消息当成新消息。
+        # 先用系统 API 把鼠标移到安全位置，避免启动时鼠标停在角落触发 fail-safe。
+        winm.user32.SetCursorPos(400, 400)
+        self._seen_texts = []
+        self._text_cache = {}
+        for b in detect.find_all_bubbles(img, self.layout):
+            txt = self._bubble_text(b, img)
+            self._seen_texts.append((b["side"], txt))
+        logger.info("已标记启动画面 %d 条历史消息，等待新消息...",
+                    len(self._seen_texts))
 
     # ---------------- 停止检测 ----------------
     def _stop_requested(self):
@@ -318,6 +376,13 @@ class CompanionRunner:
                     time.sleep(self._poll_interval())
                     continue
 
+                # 抑制期内（刚处理完，右键/发送动画可能还在恢复）：
+                # 画面变化只更新基线，不重复处理，防止反馈环路
+                if time.monotonic() < self.suppress_until:
+                    self.baseline = sig
+                    time.sleep(self._poll_interval())
+                    continue
+
                 # 画面变化：进入活跃期，快速等待画面稳定
                 self.active_until = time.monotonic() + ACTIVE_WINDOW
                 stable_sig, status = self._wait_settled()
@@ -333,10 +398,12 @@ class CompanionRunner:
                     time.sleep(self._poll_interval())
                     continue
 
-                # 稳定后只做一次整窗抓取，用于定位并处理最新消息
-                last_img, _ = winm.grab(self.hwnd)
-                self._handle_new(last_img)
-                self.baseline = stable_sig
+                # 收集这一波连续消息，合并通读后只回复一次（内部会重新抓取）
+                self._handle_batch()
+                # 键鼠操作改变了画面：等待重新稳定并重建基线，再设抑制期
+                # （不能再用操作前的 stable_sig，否则会立刻被判定为“又有新消息”）
+                self.baseline = self._rebuild_baseline()
+                self.suppress_until = time.monotonic() + SUPPRESS_SECONDS
                 self.active_until = time.monotonic() + ACTIVE_WINDOW
                 consecutive_errors = 0
                 time.sleep(cfg.POLL_INTERVAL)
@@ -384,6 +451,25 @@ class CompanionRunner:
     def _changed(self, sig):
         return self.baseline is None or not (sig == self.baseline).all()
 
+    def _rebuild_baseline(self):
+        """
+        处理完一条消息后，等待 watch 区域重新稳定（连续两次签名一致），
+        用最新签名作为新基线。这样右键菜单/发送动画关闭后的画面成为基线，
+        不会被误判成“又来新消息”。超时则用最后一次签名兜底。
+        """
+        last = None
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < SETTLE_DEADLINE:
+            if self._stop_requested():
+                break
+            region = winm.grab_region(self.hwnd, self.watch)
+            s = detect.region_signature(region)
+            if last is not None and (s == last).all():
+                return s
+            last = s
+            time.sleep(SETTLE_POLL)
+        return last if last is not None else self.baseline
+
     def _maybe_heartbeat(self):
         now = time.monotonic()
         if now - self._last_hb >= HEARTBEAT_INTERVAL:
@@ -421,52 +507,129 @@ class CompanionRunner:
         return "ok"
 
     # ---------------- 处理新消息 ----------------
-    def _handle_new(self, img):
-        found = detect.find_bottom_bubble(img, self.layout)
-        side = found["side"]
-        if side is None:
-            return
+    def _bubble_fingerprint(self, b, img):
+        """气泡内容像素指纹：同一条消息滚动后像素不变，可作为跨帧稳定身份。"""
+        x0, y0, x1, y1 = b["band"]
+        crop = img[max(0, y0):y1, max(0, x0):x1]
+        return hashlib.md5(crop.tobytes()).hexdigest()
 
-        point = found["point"]
-        txt = actions.read_message_at(self.hwnd, point, cfg.DRY_RUN)
+    def _bubble_text(self, b, img):
+        """带缓存的气泡文本：命中像素指纹缓存就直接返回，不再右键。"""
+        fp = self._bubble_fingerprint(b, img)
+        if fp in self._text_cache:
+            return self._text_cache[fp]
+        txt = self._read_bubble_text(b, img)
+        self._text_cache[fp] = txt
+        # 限制缓存大小，避免长时间运行后无限增长
+        if len(self._text_cache) > 200:
+            for k in list(self._text_cache)[:100]:
+                self._text_cache.pop(k, None)
+        return txt
+
+    def _read_bubble_text(self, b, img):
+        """读取单个气泡文本：右键复制 -> 换点重试 -> OCR 兜底；过滤搜索残留。"""
+        point = b["point"]
+        txt = actions.read_message_at(self.hwnd, point, cfg.DRY_RUN,
+                                      independent=self.independent)
 
         # 文本气泡首次读空：在气泡内换点（纵向偏移）重试一次
-        if not txt and found.get("source") == "fill" and not cfg.DRY_RUN:
-            _bx0, by0, _bx1, by1 = found["band"]
+        if not txt and b.get("source") == "fill" and not cfg.DRY_RUN:
+            _bx0, by0, _bx1, by1 = b["band"]
             alt = (point[0], min(by1 - 10,
                                   point[1] + max(10, (by1 - by0) // 3)))
             logger.info("首次读图为空，换点 %s 重试", alt)
-            txt = actions.read_message_at(self.hwnd, alt, cfg.DRY_RUN)
+            txt = actions.read_message_at(self.hwnd, alt, cfg.DRY_RUN,
+                                          independent=self.independent)
 
-        # 右键复制仍失败：用 Windows OCR 兜底识别气泡文字
+        # 右键复制仍失败：用 Windows OCR 兜底
         if not txt and cfg.OCR_FALLBACK_ENABLED and not cfg.DRY_RUN:
-            txt = wx_ocr.recognize_bubble(img, found.get("band"), lang=cfg.OCR_LANG)
+            txt = wx_ocr.recognize_bubble(img, b["band"], lang=cfg.OCR_LANG)
             if txt:
                 logger.info("右键读消息失败，OCR 兜底识别：%s", txt)
 
         # 过滤搜索流程残留（搜索框里的微信号文本）
         if txt and txt.strip() == cfg.TARGET_WXID:
-            return
+            return ""
+        return (txt or "").strip()
 
-        if side == "self":
-            if txt and txt not in self.recent_self:
-                # 用户手动/手机端发的消息：作为“用户输入”处理
-                if self._is_duplicate(txt):
-                    return
+    def _collect_new(self, img):
+        """
+        识别画面里最早一条尚未处理的新消息（文本身份增量，对滚动稳健），
+        把它记入 _seen_texts 并返回 (side, text)；没有新消息返回 None。
+        只收集、不回复，供批量合并使用。
+        """
+        from collections import Counter
+
+        bubbles = detect.find_all_bubbles(img, self.layout)
+        if not bubbles:
+            return None
+
+        seen = Counter(self._seen_texts)
+        running = Counter()
+        for b in bubbles:
+            key = (b["side"], self._bubble_text(b, img))
+            running[key] += 1
+            # 当前画面里该消息出现次数 > 已处理次数：这是一条新消息
+            if running[key] > seen.get(key, 0):
+                self._seen_texts.append(key)
+                if len(self._seen_texts) > self._seen_keep:
+                    self._seen_texts = self._seen_texts[-self._seen_keep:]
+                return key
+        return None
+
+    def _gather_batch(self):
+        """
+        收集这一波所有新消息（不回复）：每轮抓最新画面收集最早一条新消息；
+        某轮没有新消息时，继续等待并复查，直到连续 BURST_GATHER_IDLE 秒
+        都没有新消息，确认对方这波连发结束。
+        返回 (对方文本列表, 自己文本列表)，按出现顺序，已过滤读取失败的空串。
+        """
+        other_texts = []
+        self_texts = []
+        collected = 0
+        idle = 0.0
+        while collected < BURST_MAX and not self._stop_requested():
+            img, _ = winm.grab(self.hwnd)
+            key = self._collect_new(img)
+            if key is not None:
+                side, txt = key
+                if txt:
+                    if side == "self":
+                        self_texts.append(txt)
+                    else:
+                        other_texts.append(txt)
+                collected += 1
+                idle = 0.0
+                continue
+            # 暂无新消息：等待后复查，确认对方这波确实发完
+            time.sleep(SETTLE_POLL)
+            idle += SETTLE_POLL
+            if idle >= BURST_GATHER_IDLE:
+                break
+        return other_texts, self_texts
+
+    def _handle_batch(self):
+        """收集一波连续消息，合并通读后只回复一次。"""
+        other_texts, self_texts = self._gather_batch()
+
+        # 用户手动/手机端发的消息：保持原有行为，作为用户输入处理
+        for txt in self_texts:
+            if txt not in self.recent_self and not self._is_duplicate(txt):
                 stats.record_self(len(txt))
                 self._respond(txt)
-            return
 
-        # 对方消息
-        # 兜底：即使识别误判为对方，只要文本是自己最近发的，一律忽略（防自我对话）
-        if txt and txt in self.recent_self:
+        # 对方消息：过滤掉自己刚发的内容（防自我对话），合并后一次回复
+        incoming = [t for t in other_texts if t not in self.recent_self]
+        if not incoming:
             return
-        if not txt:
-            txt = "[对方发了一条非文本消息（可能是图片、表情或文件）]"
-        if self._is_duplicate(txt):
+        # 有序去重：连发里完全重复的内容只保留一次
+        merged = "\n".join(dict.fromkeys(incoming))
+        if self._is_duplicate(merged):
             return
-        stats.record_recv(len(txt))
-        self._respond(txt)
+        for t in incoming:
+            stats.record_recv(len(t))
+        logger.info("本波收到 %d 条消息，合并通读后一次回复", len(incoming))
+        self._respond(merged)
 
     def _is_duplicate(self, txt):
         last_txt, last_t = self.last_user
@@ -477,6 +640,12 @@ class CompanionRunner:
 
     def _respond(self, user_text):
         if _stop_file_requested() or not _parent_alive():
+            return
+
+        # 上一条消息的接口调用仍在进行时，跳过本次，避免两个线程并发读写对话记忆
+        if self._api_worker is not None and self._api_worker.is_alive():
+            logger.warning("上一条回复仍在生成中，跳过本次消息，避免并发冲突")
+            stats.record_reply(False, 0, len(user_text))
             return
 
         # 接口调用与“真人思考停顿”并行
@@ -491,6 +660,7 @@ class CompanionRunner:
                 result["answer"] = None
 
         worker = threading.Thread(target=_call_api, name="reply-api", daemon=True)
+        self._api_worker = worker
         worker.start()
 
         lo, hi = cfg.TYPE_THINK_DELAY

@@ -1,7 +1,7 @@
 pyautogui>=0.9.54
 pyperclip>=1.8
 mss>=9.0
-pillow>=10.0
+pillow>=13.0.0
 numpy>=1.26
 requests>=2.31
 psutil>=5.9
